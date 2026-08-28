@@ -120,19 +120,17 @@ addEventListener('keydown', (e) => {
   if (keys.has(e.code)) return;
   keys.add(e.code);
   switch (e.code) {
-    case 'KeyF': {
-      const m = player.toggleMode('car');
-      hud.hint(m === 'car' ? 'in the car — W/S throttle, A/D steer' : 'back on foot');
-      break;
-    }
-    case 'KeyB': {
-      const m = player.toggleMode('bike');
-      hud.hint(m === 'bike' ? 'on a bike — Shift to push harder' : 'back on foot');
-      break;
-    }
-    case 'KeyV': {
-      const m = player.toggleMode('scooter');
-      hud.hint(m === 'scooter' ? 'on an e-scooter' : 'back on foot');
+    // Modes sit on the number row so R and F are free for looking up and down.
+    // F used to be the car, which collided with the new pitch control.
+    case 'Digit1': case 'Digit2': case 'Digit3': case 'Digit4': {
+      const wanted = ['foot', 'bike', 'scooter', 'car'][Number(e.code.slice(5)) - 1];
+      const m = player.setMode(wanted);
+      hud.hint({
+        foot: 'on foot',
+        bike: 'on a bike — Shift to push harder',
+        scooter: 'on an e-scooter',
+        car: 'in the car — W/S throttle, A/D steer',
+      }[m]);
       break;
     }
     case 'KeyC':
@@ -148,29 +146,19 @@ addEventListener('keydown', (e) => {
       hud.hint(flying ? 'flying — Shift to boost, Space/Ctrl up-down' : 'back on the ground');
       break;
     }
-    case 'KeyP':
-      pois.showPois = !pois.showPois;
-      hud.hint(pois.showPois ? 'points of interest on' : 'points of interest off');
-      break;
-    case 'KeyL':
-      pois.showStreets = !pois.showStreets;
-      hud.hint(pois.showStreets ? 'street names on' : 'street names off');
-      break;
-    case 'Digit1': case 'Digit2': case 'Digit3':
-    case 'Digit4': case 'Digit5': case 'Digit6': {
-      const cats = pois.categories;
-      const i = Number(e.code.slice(5)) - 1;
-      if (cats[i]) {
-        pois.toggleCategory(cats[i].key);
-        const on = pois.enabled.has(cats[i].key);
-        hud.hint(`${cats[i].label} ${on ? 'on' : 'off'}`);
-      }
+    // Places and street names share one key; the per-category toggles were more
+    // keyboard than the feature was worth.
+    case 'KeyT': {
+      const on = !(pois.showPois && pois.showStreets);
+      pois.showPois = on;
+      pois.showStreets = on;
+      hud.hint(on ? 'labels on' : 'labels off');
       break;
     }
     case 'KeyM':
       hud.cycleZoom();
       break;
-    case 'KeyR':
+    case 'KeyX':
       player.setMode('foot');
       player.spawn(sx, sz);
       if (world.spawnPoint.heading !== undefined) {
@@ -324,7 +312,13 @@ function frame(now) {
   fps += ((1 / Math.max(dt, 1e-4)) - fps) * 0.08;
   acc += dt;
 
+  const wasFlying = player.flying;
   player.update(dt, keys);
+  if (player.flying !== wasFlying) {
+    hud.hint(player.flying
+      ? 'airborne — look down and fly into the ground to land'
+      : 'landed');
+  }
   world.update(player.pos.x, player.pos.z);
   pois.update(player.pos.x, player.pos.z);
   const head = player.applyCamera(camera);

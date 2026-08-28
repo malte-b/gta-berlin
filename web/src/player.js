@@ -4,6 +4,20 @@ const GRAVITY = 24.0;
 const JUMP = 8.2;
 const EYE = 1.72;
 
+// Turning on the keyboard, so the whole game is playable with one hand.
+const TURN_RATE = 1.9;          // radians per second
+const TURN_RATE_AIR = 1.5;
+const PITCH_RATE = 1.4;         // R / F, so the mouse is optional entirely
+const PITCH_MIN = -1.3;
+const PITCH_MAX = 1.15;
+
+// Look up past this and push forward, and you lift off. Landing happens on
+// contact with the ground, which makes walking and flying one continuous
+// thing rather than two modes behind a toggle.
+const TAKEOFF_PITCH = 0.42;     // about 24 degrees above the horizon
+const TAKEOFF_LIFT = 7.5;
+const LAND_COOLDOWN = 0.5;      // stops an immediate re-launch on touchdown
+
 /**
  * Movement modes.
  *
@@ -44,6 +58,8 @@ export class Player {
     this.flying = false;
     this.strideDist = 0;       // metres travelled, drives the animation phase
     this.lean = 0;
+    this.takeoffCooldown = 0;
+    this.justLanded = 0;
   }
 
   get cfg() { return MODES[this.mode]; }
@@ -119,7 +135,30 @@ export class Player {
     return true;
   }
 
+  /** Q and E turn left and right, in every mode. */
+  _turnInput(keys) {
+    return (keys.has('KeyQ') ? 1 : 0) - (keys.has('KeyE') ? 1 : 0);
+  }
+
+  /**
+   * R and F tilt the view up and down.
+   *
+   * Together with Q/E this removes the mouse from the critical path: taking
+   * off needs the view pitched at the sky, so without a keyboard equivalent
+   * the one-handed scheme could turn and walk but never actually fly.
+   * Clamped to the same limits the mouse look uses.
+   */
+  _pitchInput(keys, dt) {
+    const d = (keys.has('KeyR') ? 1 : 0) - (keys.has('KeyF') ? 1 : 0);
+    if (!d) return;
+    this.pitch = Math.max(PITCH_MIN,
+      Math.min(PITCH_MAX, this.pitch + d * PITCH_RATE * dt));
+  }
+
   update(dt, keys) {
+    if (this.takeoffCooldown > 0) this.takeoffCooldown -= dt;
+    if (this.justLanded > 0) this.justLanded -= dt;
+    this._pitchInput(keys, dt);
     if (this.flying) return this._updateFly(dt, keys);
     if (this.vehicle) return this._updateVehicle(dt, keys);
     return this._updateFoot(dt, keys);
@@ -128,6 +167,17 @@ export class Player {
   _updateFoot(dt, keys) {
     const w = this.world;
     const cfg = this.cfg;
+    this.yaw += this._turnInput(keys) * TURN_RATE * dt;
+
+    // look to the sky and lean into it: take off
+    if (this.pitch > TAKEOFF_PITCH && keys.has('KeyW') && this.takeoffCooldown <= 0) {
+      this.flying = true;
+      this.launched = true;
+      this.vel.set(0, TAKEOFF_LIFT, 0);
+      this.pos.y += 0.15;
+      return;
+    }
+
     let fx = 0, fz = 0;
     if (keys.has('KeyW')) fz -= 1;
     if (keys.has('KeyS')) fz += 1;
@@ -189,7 +239,8 @@ export class Player {
     // steering authority falls off with speed so it stays controllable
     const grip = car ? 1 / (1 + Math.abs(this.speed) * 0.055)
                      : 1 / (1 + Math.abs(this.speed) * 0.030);
-    const steer = (keys.has('KeyA') ? 1 : 0) - (keys.has('KeyD') ? 1 : 0);
+    const steer = Math.max(-1, Math.min(1,
+      (keys.has('KeyA') ? 1 : 0) - (keys.has('KeyD') ? 1 : 0) + this._turnInput(keys)));
     const rate = car ? 2.5 : 3.1;
     if (Math.abs(this.speed) > 0.2) {
       this.heading += steer * dt * rate * grip * Math.sign(this.speed);
@@ -210,6 +261,7 @@ export class Player {
   }
 
   _updateFly(dt, keys) {
+    this.yaw += this._turnInput(keys) * TURN_RATE_AIR * dt;
     const fast = keys.has('ShiftLeft') || keys.has('ShiftRight');
     const speed = fast ? 160 : 38;
     const s = Math.sin(this.yaw), c = Math.cos(this.yaw);
@@ -229,12 +281,43 @@ export class Player {
       this.pos.y += (dy / len) * speed * dt;
       this.pos.z += (dz / len) * speed * dt;
     }
+
+    // a short arc up out of the launch, so leaving the ground has some weight
+    if (this.launched) {
+      this.pos.y += this.vel.y * dt;
+      this.vel.y -= GRAVITY * 0.35 * dt;
+      if (this.vel.y <= 0) this.launched = false;
+    }
+
+    // touching the ground ends the flight; no toggle needed
+    const g = this.world.height(this.pos.x, this.pos.z);
+    if (this.pos.y <= g + 0.05) {
+      this.land();
+    }
+  }
+
+  /** Put the player back on their feet wherever they came down. */
+  land() {
+    const w = this.world;
+    this.flying = false;
+    this.launched = false;
+    this.takeoffCooldown = LAND_COOLDOWN;
+    this.justLanded = 0.9;
+    if (w.nav) {
+      const spot = w.nav.nearestPassable(this.pos.x, this.pos.z, this.driving, 60);
+      if (spot) { this.pos.x = spot[0]; this.pos.z = spot[1]; }
+    }
+    this.pos.y = w.height(this.pos.x, this.pos.z);
     this.vel.set(0, 0, 0);
+    this.onGround = true;
+    // level the view off so you are not left staring at the sky
+    if (this.pitch > 0.1) this.pitch = 0.1;
   }
 
   toggleFly() {
     this.flying = !this.flying;
     if (this.flying) {
+      this.launched = false;
       this.pos.y = Math.max(this.pos.y, this.world.height(this.pos.x, this.pos.z) + 40);
     } else {
       const w = this.world;
@@ -263,24 +346,43 @@ export class Player {
       cam.rotateX(this.pitch);
       return head;
     }
-    const far = this.mode === 'car' ? 11.5 : (this.riding ? 7.4 : 6.4);
-    const dist = this.camMode === 0 ? far : 3.4;
-    const lift = this.camMode === 0 ? (this.mode === 'car' ? 3.9 : 2.6) : 1.5;
-    const cp = Math.cos(this.pitch);
-    const want = new THREE.Vector3(
-      head.x + Math.sin(this.yaw) * dist * cp,
-      head.y + lift - Math.sin(this.pitch) * dist,
-      head.z + Math.cos(this.yaw) * dist * cp,
-    );
+    // A true orbit: the camera sits on a sphere of fixed radius around the
+    // player, and pitch only moves it along that sphere. The previous version
+    // added a constant `lift` on top of a spherical offset, which is not a
+    // sphere at all - the distance to the player swung by 137% between looking
+    // up and looking down, so tilting felt like zooming. There is no separate
+    // lift now; the camera sitting above the shoulder simply falls out of the
+    // slightly downward resting pitch.
     const w = this.world;
-    if (w.height(want.x, want.z) > head.y + 0.5) {
-      const t = 0.45;
-      want.set(head.x + (want.x - head.x) * t, want.y, head.z + (want.z - head.z) * t);
+    const radius = this.camMode === 0
+      ? (this.mode === 'car' ? 11.5 : (this.riding ? 7.4 : 6.4))
+      : 3.4;
+    const cp = Math.cos(this.pitch);
+    const dir = new THREE.Vector3(
+      Math.sin(this.yaw) * cp,
+      -Math.sin(this.pitch),
+      Math.cos(this.yaw) * cp,
+    );
+
+    // Camera collision shortens the boom instead of lifting the camera.
+    // Raising it would change the view angle, which is exactly the coupling
+    // this rewrite is removing.
+    let r = radius;
+    const probe = new THREE.Vector3();
+    for (let i = 0; i < 10; i++) {
+      probe.copy(head).addScaledVector(dir, r);
+      if (probe.y >= w.height(probe.x, probe.z) + 0.55) break;
+      r *= 0.78;
+      if (r < 1.4) { r = 1.4; break; }
     }
-    const floor = w.height(want.x, want.z) + 1.6;
-    if (want.y < floor) want.y = floor;
-    cam.position.copy(want);
-    cam.lookAt(head.x, head.y + 0.3, head.z);
+
+    // Orientation is never set directly - it is always derived from lookAt, the
+    // same way a real spring-arm camera works. Whatever the collision loop did
+    // to the radius, the camera still ends up pointed exactly at the player;
+    // position and orientation can never disagree, which is what setting
+    // rotation from raw pitch independently of position broke last time.
+    cam.position.copy(head).addScaledVector(dir, r);
+    cam.lookAt(head);
     return head;
   }
 }
