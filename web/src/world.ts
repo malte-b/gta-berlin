@@ -81,7 +81,9 @@ export class World {
   }
 
   async init(onProgress: (msg: string) => void, renderer: THREE.WebGLRenderer): Promise<this> {
-    this.manifest = await fetch(DATA + 'world.json').then((r) => r.json()) as Manifest;
+    const res = await fetch(DATA + 'world.json');
+    if (!res.ok) throw new Error(`${DATA}world.json (${res.status})`);
+    this.manifest = await res.json() as Manifest;
     const m = this.manifest;
     this.origin = m.origin;
     this.world = m.world;

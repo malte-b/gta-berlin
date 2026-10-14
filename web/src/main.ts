@@ -21,6 +21,11 @@ const say = (m: string, pct?: number) => {
   bootMsg.textContent = m;
   if (pct !== undefined) bar.style.width = `${Math.round(pct * 100)}%`;
 };
+// A failed load would otherwise leave the boot screen on its last message
+// forever, which looks like a hang rather than an error.
+const fail = (err: unknown) => say(`failed to load: ${err instanceof Error ? err.message : String(err)}`);
+window.addEventListener('error', (e) => fail(e.error ?? e.message));
+window.addEventListener('unhandledrejection', (e) => fail(e.reason));
 
 /* --- renderer ------------------------------------------------------------ */
 

@@ -148,4 +148,20 @@ vite.config.ts.timestamp-*
 *.pyc
 .DS_Store
 /tools/
-/web/public/data/
+# Built world. Only the open-data (OSM mode) output is committed, because
+# Vercel can't run the pipeline. Everything else stays out, especially the
+# photogrammetric mesh (m_*, t_*, h_*, mesh_manifest.json): it is finer than
+# 20 cm at ground level and must not be used or published (privacy law).
+/web/public/data/*
+!/web/public/data/world.json
+!/web/public/data/pois.json
+!/web/public/data/terrain.bin
+!/web/public/data/nav.bin
+!/web/public/data/trees.bin
+!/web/public/data/props.bin
+!/web/public/data/props.glb
+!/web/public/data/buildings.glb
+!/web/public/data/cover.png
+!/web/public/data/env/
+!/web/public/data/ground/
+!/web/public/data/ortho/

@@ -24,9 +24,12 @@ npm run dev          # http://localhost:5173
 npm run typecheck
 ```
 
-The client is TypeScript on three.js. The built world (~18 MB) is not in the
-repository: `web/public/data/` is git-ignored, so run the pipeline below once
-before `npm run dev`.
+The client is TypeScript on three.js. The built open-data world (~32 MB) is
+committed under `web/public/data/` so that Vercel can serve it, since the
+pipeline can't run there. After changing the area or the pipeline, rebuild it
+with the steps below and commit the result. The photogrammetric mesh is
+git-ignored and must not be published: it is finer than 20 cm at ground
+level, which privacy law forbids.
 
 ---
 
