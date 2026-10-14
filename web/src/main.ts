@@ -1,20 +1,23 @@
 import * as THREE from 'three';
-import { MeshWorld } from './meshworld.js';
-import { Player } from './player.js';
-import { HUD } from './hud.js';
-import { Locator } from './locate.js';
-import { PoiLayer } from './pois.js';
-import { skyMaterial } from './materials.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
+import { World } from './world';
+import { MeshLayer } from './meshlayer';
+import { Player } from './player';
+import { HUD } from './hud';
+import { Locator } from './locate';
+import { PoiLayer } from './pois';
+import { skyMaterial } from './materials';
 import { makeBike, makeHuman, makeScooter, poseCycle, poseDrive,
-         poseIdle, poseJump, poseScoot, poseWalk } from './character.js';
+         poseIdle, poseJump, poseScoot, poseWalk } from './character';
 
 
-const boot = document.getElementById('boot');
-const bootMsg = document.getElementById('bootmsg');
-const bar = document.querySelector('#bar div');
-const playBtn = document.getElementById('play');
+const boot = document.getElementById('boot')!;
+const bootMsg = document.getElementById('bootmsg')!;
+const bar = document.querySelector<HTMLElement>('#bar div')!;
+const playBtn = document.getElementById('play') as HTMLButtonElement;
 
-const say = (m, pct) => {
+const say = (m: string, pct?: number) => {
   bootMsg.textContent = m;
   if (pct !== undefined) bar.style.width = `${Math.round(pct * 100)}%`;
 };
@@ -27,6 +30,12 @@ const renderer = new THREE.WebGLRenderer({
 });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
+// Everything in the city is a standard PBR material now, so three does the
+// tone mapping and colour conversion; only the sky still does its own.
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -34,8 +43,10 @@ const camera = new THREE.PerspectiveCamera(66, innerWidth / innerHeight, 0.25, 6
 
 const FOG_DAY = new THREE.Color(0x9fb2c6);
 const FOG_NIGHT = new THREE.Color(0x0d1119);
-scene.fog = new THREE.Fog(FOG_DAY.getHex(), 260, 1100);
-scene.background = FOG_DAY.clone();
+const fog = new THREE.Fog(FOG_DAY.getHex(), 260, 1100);
+const background = FOG_DAY.clone();
+scene.fog = fog;
+scene.background = background;
 
 const sky = new THREE.Mesh(new THREE.SphereGeometry(4000, 24, 16), skyMaterial());
 sky.frustumCulled = false;
@@ -43,11 +54,58 @@ scene.add(sky);
 
 const sunDir = new THREE.Vector3(0.42, 0.72, 0.46).normalize();
 
+// A neutral studio environment for reflections and fill. Without one, every
+// metallic or glossy surface OSM2World's materials declare - window glass
+// above all - renders as flat black.
+{
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  pmrem.dispose();
+}
+
+// The sun. Its shadow camera is a box that follows the player around, since
+// one map over the whole square kilometre would be far too coarse to see.
+const SHADOW_SPAN = 140;
+const sun = new THREE.DirectionalLight(0xfff1dc, 2.6);
+sun.castShadow = true;
+sun.shadow.mapSize.set(4096, 4096);
+sun.shadow.camera.left = sun.shadow.camera.bottom = -SHADOW_SPAN;
+sun.shadow.camera.right = sun.shadow.camera.top = SHADOW_SPAN;
+sun.shadow.camera.near = 1;
+sun.shadow.camera.far = 900;
+sun.shadow.camera.updateProjectionMatrix();     // otherwise it stays at three's +-5 m default
+sun.shadow.bias = -0.0003;
+sun.shadow.normalBias = 0.04;                  // world metres, not texels
+scene.add(sun, sun.target);
+const hemi = new THREE.HemisphereLight(0xcfdcf0, 0x4a4840, 0.8);
+scene.add(hemi);
+// how much of the fill comes from the hemisphere light; the sky HDRI, once
+// loaded, takes most of it over
+let hemiDay = 0.8;
+let envDay = 0.7;
+
 /* --- world --------------------------------------------------------------- */
 
 say('reading manifest…', 0.1);
-const world = new MeshWorld(scene);
-await world.init((m) => say(m, 0.3), renderer);
+const world = new World(scene);
+await world.init((m) => say(m, 0.5), renderer);
+
+// Image-based lighting from a real (overcast) sky instead of the studio room.
+if (world.manifest.environment) {
+  say('sky lighting', 0.55);
+  try {
+    const hdr = await new RGBELoader().loadAsync('data/' + world.manifest.environment.file);
+    hdr.mapping = THREE.EquirectangularReflectionMapping;
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromEquirectangular(hdr).texture;
+    pmrem.dispose();
+    hdr.dispose();
+    envDay = 0.6;
+    hemiDay = 0.35;
+  } catch (err) {
+    console.warn('sky lighting unavailable, keeping the studio environment', err);
+  }
+}
 
 const player = new Player(world);
 const hud = new HUD(world);
@@ -63,24 +121,6 @@ const sz = world.spawnPoint.z;
 player.pos.set(sx, 0, sz);
 player.yaw = Math.PI * 0.25;
 
-say('streaming first tiles…', 0.45);
-world.update(player.pos.x, player.pos.z);
-
-// wait for the tile under our feet before letting the player in
-await new Promise((resolve) => {
-  const t0 = performance.now();
-  const tick = () => {
-    world.update(player.pos.x, player.pos.z);
-    const s = world.stats;
-    say(`streaming mesh — ${s.ready} of ${s.total} tiles`,
-        0.45 + 0.5 * (s.ready / Math.max(1, s.total)));
-    // wait for the tile under the spawn point, not the whole city
-    if (s.ready >= 1 || performance.now() - t0 > 40000) resolve();
-    else requestAnimationFrame(tick);
-  };
-  tick();
-});
-
 if (!locator.applyHash()) {
   player.spawn(sx, sz);
   // a pinned spawn can also carry the direction to look in
@@ -89,6 +129,47 @@ if (!locator.applyHash()) {
     player.heading = world.spawnPoint.heading;
   }
 }
+// The photogrammetric mesh, if it has been built locally. It is the default
+// view when present; O swaps to the open-data scene. Both share the same
+// ground and navigation underneath, so switching never moves the player.
+const mesh = await MeshLayer.load(renderer);
+const credits = document.getElementById('credits')!;
+const OPEN_CREDITS = credits.innerHTML;
+let view: 'mesh' | 'open' = mesh ? 'mesh' : 'open';
+let shadowsWanted = true;
+function applyView(): void {
+  const m = view === 'mesh' && mesh !== null;
+  if (mesh) mesh.group.visible = m;
+  world.open.visible = !m;
+  // Under the cleaned mesh the draped terrain sits just below its flattened
+  // ground and only shows through the holes left where cranes were cut out.
+  // Under the original mesh it would poke through every dip, so it is off.
+  world.ground.visible = !m || (mesh !== null && !mesh.raw);
+  world.ground.position.y = m ? -0.15 : 0;
+  // nothing in the mesh receives shadows - its photos have them baked in
+  sun.castShadow = shadowsWanted && !m;
+  credits.innerHTML = m
+    ? '© Berlin Partner für Wirtschaft und Technologie GmbH – 3D-Meshmodell Berlin'
+      + ' · non-commercial use only'
+    : OPEN_CREDITS;
+}
+if (mesh) {
+  scene.add(mesh.group);
+  // wait for the tile underfoot before letting the player in
+  await new Promise<void>((resolve) => {
+    const t0 = performance.now();
+    const tick = () => {
+      mesh.update(player.pos.x, player.pos.z);
+      const s = mesh.stats;
+      say(`streaming mesh — ${s.ready} of ${s.total} tiles`, 0.6 + 0.4 * (s.ready / s.total));
+      if (s.ready >= 1 || performance.now() - t0 > 40000) resolve();
+      else requestAnimationFrame(tick);
+    };
+    tick();
+  });
+}
+applyView();
+
 say('ready', 1);
 playBtn.disabled = false;
 playBtn.textContent = 'Drop in';
@@ -98,10 +179,10 @@ playBtn.textContent = 'Drop in';
 // declared before the listeners below: they can fire while the world is
 // still streaming behind the top-level await
 let night = 0;
-const keys = new Set();
+const keys = new Set<string>();
 let pointerLocked = false;
 
-const goInput = document.getElementById('goInput');
+const goInput = document.getElementById('goInput') as HTMLInputElement;
 const typing = () => document.activeElement === goInput;
 
 addEventListener('keydown', (e) => {
@@ -168,11 +249,30 @@ addEventListener('keydown', (e) => {
       hud.hint('back at the start');
       break;
     case 'KeyG': {
-      // more tiles at full atlas resolution, at roughly 85 MB of GPU memory each
-      world.hiCount = world.hiCount >= 9 ? 3 : 9;
-      hud.hint(world.hiCount >= 9
-        ? 'all tiles at full texture resolution'
-        : 'full texture resolution near the camera only');
+      // shadows are the single most expensive thing in the frame
+      shadowsWanted = !shadowsWanted;
+      applyView();
+      hud.hint(shadowsWanted ? 'shadows on' : 'shadows off');
+      break;
+    }
+    case 'KeyK': {
+      if (!mesh) break;
+      void mesh.setRaw(!mesh.raw).then((ok) => {
+        applyView();
+        hud.hint(!ok
+          ? 'no cleaned mesh - run pipeline/clean_mesh.py'
+          : mesh.raw ? 'mesh: original' : 'mesh: cleaned (flat ground, no cranes, holes filled from the orthophoto)');
+      });
+      break;
+    }
+    case 'KeyO': {
+      if (!mesh) {
+        hud.hint('no mesh built - see pipeline/build_mesh.py');
+        break;
+      }
+      view = view === 'mesh' ? 'open' : 'mesh';
+      applyView();
+      hud.hint(view === 'mesh' ? 'photogrammetric mesh' : 'open data: OSM2World + ALS + Baumkataster');
       break;
     }
     default:
@@ -198,7 +298,7 @@ goInput.addEventListener('keydown', async (e) => {
   keys.clear();
 });
 
-document.getElementById('goShare').addEventListener('click', async () => {
+document.getElementById('goShare')!.addEventListener('click', async () => {
   const url = locator.shareUrl();
   try {
     await navigator.clipboard.writeText(url);
@@ -233,7 +333,7 @@ addEventListener('mousemove', (e) => {
  */
 let viewW = 0;
 let viewH = 0;
-function fitToWindow() {
+function fitToWindow(): void {
   const w = Math.max(1, innerWidth);
   const h = Math.max(1, innerHeight);
   if (w === viewW && h === viewH) return;
@@ -258,7 +358,7 @@ playBtn.addEventListener('click', () => {
 
 // The character and rideables are built from primitives and posed by joint
 // rotation, so nothing has to be downloaded and they stay readable at
-// third-person distance. See character.js.
+// third-person distance. See character.ts.
 const avatar = makeHuman();
 scene.add(avatar);
 
@@ -267,27 +367,26 @@ const scooter = makeScooter();
 bike.visible = scooter.visible = false;
 scene.add(bike, scooter);
 
-// the figure needs light now that it is not a flat-shaded blob
-scene.add(new THREE.HemisphereLight(0xdfe8f5, 0x424a52, 2.1));
-const keyLight = new THREE.DirectionalLight(0xfff2e0, 1.5);
-keyLight.position.set(0.42, 0.72, 0.46);
-scene.add(keyLight);
+// lit by the same sun and sky as the city, and casting a shadow into it
+for (const o of [avatar, bike, scooter]) {
+  o.traverse((c) => { if ((c as THREE.Mesh).isMesh) c.castShadow = true; });
+}
 
 const car = new THREE.Group();
 {
   const body = new THREE.Mesh(
     new THREE.BoxGeometry(1.85, 0.72, 4.3),
-    new THREE.MeshBasicMaterial({ color: 0xd8503c }),
+    new THREE.MeshStandardMaterial({ color: 0xd8503c, roughness: 0.35, metalness: 0.3 }),
   );
   body.position.y = 0.62;
   const roof = new THREE.Mesh(
     new THREE.BoxGeometry(1.66, 0.62, 2.1),
-    new THREE.MeshBasicMaterial({ color: 0x2a2f3a }),
+    new THREE.MeshStandardMaterial({ color: 0x2a2f3a, roughness: 0.15, metalness: 0.6 }),
   );
   roof.position.set(0, 1.26, -0.18);
   car.add(body, roof);
   const wheelGeo = new THREE.CylinderGeometry(0.36, 0.36, 0.26, 10);
-  const wheelMat = new THREE.MeshBasicMaterial({ color: 0x14161c });
+  const wheelMat = new THREE.MeshStandardMaterial({ color: 0x14161c, roughness: 0.9 });
   for (const [wx, wz] of [[-0.92, 1.42], [0.92, 1.42], [-0.92, -1.42], [0.92, -1.42]]) {
     const wheel = new THREE.Mesh(wheelGeo, wheelMat);
     wheel.rotation.z = Math.PI / 2;
@@ -295,6 +394,7 @@ const car = new THREE.Group();
     car.add(wheel);
   }
 }
+car.traverse((c) => { if ((c as THREE.Mesh).isMesh) c.castShadow = true; });
 scene.add(car);
 
 /* --- frame loop ---------------------------------------------------------- */
@@ -305,7 +405,7 @@ let fps = 60;
 let acc = 0;
 let hashTimer = 1.0;
 
-function frame(now) {
+function frame(now: number): void {
   requestAnimationFrame(frame);
   const dt = Math.min((now - last) / 1000, 0.05);
   last = now;
@@ -319,7 +419,6 @@ function frame(now) {
       ? 'airborne — look down and fly into the ground to land'
       : 'landed');
   }
-  world.update(player.pos.x, player.pos.z);
   pois.update(player.pos.x, player.pos.z);
   const head = player.applyCamera(camera);
 
@@ -374,27 +473,38 @@ function frame(now) {
   const lift = 1 + Math.min(agl, 900) / 90;
   const near = 260 * lift;
   const far = (player.inCar ? 1300 : 1100) * lift;
-  scene.fog.color.copy(fogColor);
-  scene.fog.near = near;
-  scene.fog.far = far;
-  scene.background.copy(fogColor);
+  fog.color.copy(fogColor);
+  fog.near = near;
+  fog.far = far;
+  background.copy(fogColor);
   sky.position.copy(camera.position);
   sky.material.uniforms.night.value = nightMix;
   sky.material.uniforms.sunDir.value.copy(sunDir);
 
-  world.setEnv({
-    night: nightMix,
-    time: acc,
-    fogNear: near,
-    fogFar: far,
-    fogColor,
-    sunDir,
-    exposure: 1.35 - nightMix * 0.5,
-  });
+  world.setEnv({ night: nightMix, time: acc });
+  if (mesh && view === 'mesh') {
+    mesh.update(player.pos.x, player.pos.z);
+    mesh.setEnv({ near, far, color: fogColor, night: nightMix,
+                  exposure: 1.35 - nightMix * 0.5 });
+  }
+
+  // sun and sky light fade together; the shadow box re-centres on the
+  // player in whole texels, so shadow edges do not shimmer as you move
+  sun.intensity = 2.6 * (1 - nightMix) + 0.08;
+  sun.color.setHex(0xfff1dc).lerp(new THREE.Color(0x8aa0d0), nightMix);
+  hemi.intensity = hemiDay * (1 - nightMix) + 0.12;
+  scene.environmentIntensity = envDay * (1 - nightMix) + 0.1 * nightMix;
+  renderer.toneMappingExposure = 1.0 - nightMix * 0.25;
+  const texel = (2 * SHADOW_SPAN) / sun.shadow.mapSize.x;
+  const fx = Math.round(player.pos.x / texel) * texel;
+  const fz = Math.round(player.pos.z / texel) * texel;
+  const gy = world.height(fx, fz);
+  sun.target.position.set(fx, gy, fz);
+  sun.position.set(fx + sunDir.x * 400, gy + sunDir.y * 400, fz + sunDir.z * 400);
 
   fitToWindow();
   renderer.render(scene, camera);
-  hud.draw(player, dt, fps);
+  hud.draw(player, dt, fps, renderer.info.render);
   hashTimer -= dt;
   if (hashTimer <= 0) { hashTimer = 1.0; locator.syncHash(); }
   void head;
@@ -402,4 +512,5 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 // expose for quick console poking during development
-window.__berlin = { world, player, camera, renderer, scene, hud, locator, pois };
+(window as unknown as { __berlin: object }).__berlin =
+  { world, mesh, player, camera, renderer, scene, hud, locator, pois };

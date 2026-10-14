@@ -147,3 +147,5 @@ vite.config.ts.timestamp-*
 /cache/
 *.pyc
 .DS_Store
+/tools/
+/web/public/data/

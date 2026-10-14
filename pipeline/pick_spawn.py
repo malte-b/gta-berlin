@@ -174,7 +174,7 @@ def main():
         "%d m to kerb, %.0f m from a %s)"
         % (x, z, openness, sectors, rd, near, args.near))
 
-    mpath = os.path.join(OUT, "mesh_manifest.json")
+    mpath = os.path.join(OUT, "world.json")
     manifest = json.load(open(mpath))
     manifest["spawn"] = {"x": round(x, 1), "z": round(z, 1),
                          "sectors": sectors, "toRoad": rd,
@@ -182,7 +182,7 @@ def main():
                          "openness": openness}
     with open(mpath, "w") as fh:
         json.dump(manifest, fh, indent=1)
-    log("Wrote spawn to mesh_manifest.json")
+    log("Wrote spawn to world.json")
     return 0
 
 

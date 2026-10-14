@@ -17,17 +17,34 @@ import * as THREE from 'three';
 const SKIN = 0xd8a07a;
 const JACKET = 0xe0673c;
 
-function mat(color, rough = 1) {
-  void rough;
+export interface Rig {
+  body: THREE.Group;
+  hips: THREE.Group;
+  torso: THREE.Mesh;
+  head: THREE.Group;
+  armL: THREE.Group; armR: THREE.Group;
+  foreL: THREE.Group; foreR: THREE.Group;
+  legL: THREE.Group; legR: THREE.Group;
+  shinL: THREE.Group; shinR: THREE.Group;
+  footL: THREE.Mesh; footR: THREE.Mesh;
+}
+
+export interface Palette { skin?: number; top?: number; legs?: number; hair?: number }
+
+function mat(color: number): THREE.MeshLambertMaterial {
   return new THREE.MeshLambertMaterial({ color });
 }
 
-function box(w, h, d, color) {
+function rig(root: THREE.Object3D): Rig {
+  return root.userData.rig as Rig;
+}
+
+function box(w: number, h: number, d: number, color: number): THREE.Mesh {
   return new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat(color));
 }
 
 /** A limb that pivots from its top end, like a real joint. */
-function limb(w, h, d, color) {
+function limb(w: number, h: number, d: number, color: number): THREE.Group {
   const pivot = new THREE.Group();
   const m = box(w, h, d, color);
   m.position.y = -h / 2;
@@ -36,7 +53,7 @@ function limb(w, h, d, color) {
   return pivot;
 }
 
-export function makeHuman(palette = {}) {
+export function makeHuman(palette: Palette = {}): THREE.Group {
   const skin = palette.skin ?? SKIN;
   const top = palette.top ?? JACKET;
   const legs = palette.legs ?? 0x36405a;
@@ -100,14 +117,15 @@ export function makeHuman(palette = {}) {
   shinL.add(footL);
   shinR.add(footR);
 
-  root.userData.rig = { body, hips, torso, head, armL, armR, foreL, foreR,
-                        legL, legR, shinL, shinR, footL, footR };
+  const r: Rig = { body, hips, torso, head, armL, armR, foreL, foreR,
+                   legL, legR, shinL, shinR, footL, footR };
+  root.userData.rig = r;
   return root;
 }
 
 /** Reset every joint; each pose function starts from a known state. */
-function rest(r) {
-  for (const k of ['armL','armR','foreL','foreR','legL','legR','shinL','shinR']) {
+function rest(r: Rig): void {
+  for (const k of ['armL', 'armR', 'foreL', 'foreR', 'legL', 'legR', 'shinL', 'shinR'] as const) {
     r[k].rotation.set(0, 0, 0);
   }
   r.hips.rotation.set(0, 0, 0);
@@ -116,8 +134,8 @@ function rest(r) {
   r.head.rotation.set(0, 0, 0);
 }
 
-export function poseWalk(root, phase, speed) {
-  const r = root.userData.rig;
+export function poseWalk(root: THREE.Object3D, phase: number, speed: number): void {
+  const r = rig(root);
   rest(r);
   // blend amplitude with speed so a slow walk is not a march
   const amp = Math.min(1, speed / 5.5);
@@ -144,8 +162,8 @@ export function poseWalk(root, phase, speed) {
   r.head.rotation.x = -Math.min(0.18, speed * 0.018);
 }
 
-export function poseIdle(root, t) {
-  const r = root.userData.rig;
+export function poseIdle(root: THREE.Object3D, t: number): void {
+  const r = rig(root);
   rest(r);
   const breathe = Math.sin(t * 1.6);
   r.hips.position.y = 0.92 + breathe * 0.012;
@@ -158,8 +176,8 @@ export function poseIdle(root, t) {
   r.head.rotation.y = Math.sin(t * 0.4) * 0.18;
 }
 
-export function poseJump(root, rising) {
-  const r = root.userData.rig;
+export function poseJump(root: THREE.Object3D, rising: boolean): void {
+  const r = rig(root);
   rest(r);
   r.armL.rotation.x = rising ? -2.2 : -1.5;
   r.armR.rotation.x = rising ? -2.2 : -1.5;
@@ -171,8 +189,8 @@ export function poseJump(root, rising) {
 }
 
 /** Seated, hands forward on a wheel. */
-export function poseDrive(root) {
-  const r = root.userData.rig;
+export function poseDrive(root: THREE.Object3D): void {
+  const r = rig(root);
   rest(r);
   r.hips.position.y = 0.62;
   r.legL.rotation.x = -1.45;
@@ -189,8 +207,8 @@ export function poseDrive(root) {
 }
 
 /** Leaning over the bars, legs turning the cranks. */
-export function poseCycle(root, phase, lean = 0.42) {
-  const r = root.userData.rig;
+export function poseCycle(root: THREE.Object3D, phase: number, lean = 0.42): void {
+  const r = rig(root);
   rest(r);
   r.hips.position.y = 0.72;
   r.torso.rotation.x = lean;
@@ -213,8 +231,8 @@ export function poseCycle(root, phase, lean = 0.42) {
 }
 
 /** Standing on a deck, one foot forward. */
-export function poseScoot(root, t) {
-  const r = root.userData.rig;
+export function poseScoot(root: THREE.Object3D, t: number): void {
+  const r = rig(root);
   rest(r);
   r.hips.position.y = 0.90;
   r.torso.rotation.x = 0.20;
@@ -233,17 +251,17 @@ export function poseScoot(root, t) {
 
 /* --- rideables ----------------------------------------------------------- */
 
-function wheel(radius, width, color = 0x14161c) {
+function wheel(radius: number, width: number, color = 0x14161c): THREE.Mesh {
   const m = new THREE.Mesh(
     new THREE.CylinderGeometry(radius, radius, width, 16), mat(color));
   m.rotation.z = Math.PI / 2;
   return m;
 }
 
-export function makeBike() {
+export function makeBike(): THREE.Group {
   const g = new THREE.Group();
   const frame = mat(0x2e6f7d);
-  const tube = (len, thick = 0.045) =>
+  const tube = (len: number, thick = 0.045) =>
     new THREE.Mesh(new THREE.BoxGeometry(thick, len, thick), frame);
 
   // Everything here points its front at +Z, matching makeHuman(), so a single
@@ -278,7 +296,7 @@ export function makeBike() {
   return g;
 }
 
-export function makeScooter() {
+export function makeScooter(): THREE.Group {
   const g = new THREE.Group();
   const body = mat(0x3d4450);
   const accent = mat(0xd9d9dc);

@@ -5,9 +5,16 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host",
-    "build": "vite build",
-    "preview": "vite preview --host"
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host",
+    "typecheck": "tsc --noEmit"
   },
-  "devDependencies": { "vite": "^5.4.10" },
-  "dependencies": { "three": "^0.169.0" }
+  "devDependencies": {
+    "@types/three": "^0.169.0",
+    "typescript": "^7.0.2",
+    "vite": "^5.4.10"
+  },
+  "dependencies": {
+    "three": "^0.169.0"
+  }
 }

@@ -1,6 +1,9 @@
 /* WGS84 -> EPSG:25833 (ETRS89 / UTM 33N), mirroring pipeline/geo.py so the
    client can place known landmarks without another round trip. */
 
+export interface Origin { e: number; n: number; h: number }
+export type XZ = [number, number];
+
 const A = 6378137.0;
 const F = 1 / 298.257223563;
 const K0 = 0.9996;
@@ -9,7 +12,7 @@ const FE = 500000;
 const E2 = F * (2 - F);
 const EP2 = E2 / (1 - E2);
 
-export function utm33(lon, lat) {
+export function utm33(lon: number, lat: number): XZ {
   const p = (lat * Math.PI) / 180;
   const dl = (lon * Math.PI) / 180 - LON0;
   const sn = Math.sin(p), cs = Math.cos(p), t = Math.tan(p);
@@ -29,14 +32,14 @@ export function utm33(lon, lat) {
   return [e, nn];
 }
 
-export function makeToWorld(origin) {
+export function makeToWorld(origin: Origin): (lon: number, lat: number) => XZ {
   return (lon, lat) => {
     const [e, n] = utm33(lon, lat);
     return [e - origin.e, -(n - origin.n)];
   };
 }
 
-export function utm33inv(e, n) {
+export function utm33inv(e: number, n: number): XZ {
   const x = e - FE;
   const y = n;
   const e1 = (1 - Math.sqrt(1 - E2)) / (1 + Math.sqrt(1 - E2));
@@ -61,6 +64,6 @@ export function utm33inv(e, n) {
 }
 
 /** World metres -> WGS84 lon/lat, for the on-screen position readout. */
-export function makeFromWorld(origin) {
+export function makeFromWorld(origin: Origin): (x: number, z: number) => XZ {
   return (x, z) => utm33inv(x + origin.e, -z + origin.n);
 }

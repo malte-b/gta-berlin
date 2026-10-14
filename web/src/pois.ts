@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { World } from './world';
 
 const DATA = 'data/';
 
@@ -16,7 +17,15 @@ const DATA = 'data/';
  * from becoming a few hundred draw calls.
  */
 
-const CATEGORY_STYLE = {
+type Category = 'refresh' | 'food' | 'shop' | 'culture' | 'transit' | 'green';
+
+interface Poi { x: number; z: number; n: string; c: Category }
+interface StreetSpot { x: number; z: number; a: number }
+interface Street { name: string; major: boolean; at: StreetSpot[] }
+interface PoiData { streets: Street[]; pois: Poi[] }
+interface Label { tex: THREE.CanvasTexture; w: number; h: number }
+
+const CATEGORY_STYLE: Record<Category, { colour: string; dot: number; label: string }> = {
   refresh: { colour: '#5ec8e5', dot: 0x5ec8e5, label: 'refreshment' },
   food:    { colour: '#ffb454', dot: 0xffb454, label: 'food & drink' },
   shop:    { colour: '#e58fd0', dot: 0xe58fd0, label: 'shops' },
@@ -29,17 +38,17 @@ const POI_RADIUS = 130;
 const STREET_RADIUS = 170;
 const MAX_POI_SPRITES = 70;
 
-function labelTexture(text, colour, scale = 1) {
+function labelTexture(text: string, colour: string, scale = 1): Label {
   const pad = 12;
   const font = `600 ${Math.round(30 * scale)}px ui-monospace, Menlo, monospace`;
-  const probe = document.createElement('canvas').getContext('2d');
+  const probe = document.createElement('canvas').getContext('2d')!;
   probe.font = font;
   const w = Math.ceil(probe.measureText(text).width) + pad * 2;
   const h = Math.round(46 * scale);
   const c = document.createElement('canvas');
   c.width = w;
   c.height = h;
-  const g = c.getContext('2d');
+  const g = c.getContext('2d')!;
   g.font = font;
   g.textBaseline = 'middle';
   // dark plate keeps the text legible over any photograph underneath
@@ -62,16 +71,16 @@ function labelTexture(text, colour, scale = 1) {
   return { tex, w, h };
 }
 
-function streetTexture(text) {
+function streetTexture(text: string): Label {
   const font = '700 40px ui-monospace, Menlo, monospace';
-  const probe = document.createElement('canvas').getContext('2d');
+  const probe = document.createElement('canvas').getContext('2d')!;
   probe.font = font;
   const w = Math.ceil(probe.measureText(text).width) + 40;
   const h = 64;
   const c = document.createElement('canvas');
   c.width = w;
   c.height = h;
-  const g = c.getContext('2d');
+  const g = c.getContext('2d')!;
   g.font = font;
   g.textAlign = 'center';
   g.textBaseline = 'middle';
@@ -89,26 +98,28 @@ function streetTexture(text) {
 }
 
 export class PoiLayer {
-  constructor(scene, world) {
+  readonly scene: THREE.Scene;
+  readonly world: World;
+  data: PoiData | null = null;
+  showPois = true;
+  showStreets = true;
+  readonly enabled = new Set<string>(Object.keys(CATEGORY_STYLE));
+  readonly group = new THREE.Group();
+  readonly streetGroup = new THREE.Group();
+  private readonly texCache = new Map<string, Label>();
+  private readonly streetCache = new Map<string, Label>();
+  private readonly mounted = new Map<string, THREE.Object3D>();
+  private readonly streetMounted = new Map<string, THREE.Mesh | null>();
+
+  constructor(scene: THREE.Scene, world: World) {
     this.scene = scene;
     this.world = world;
-    this.data = null;
-    this.showPois = true;
-    this.showStreets = true;
-    this.enabled = new Set(Object.keys(CATEGORY_STYLE));
-    this.group = new THREE.Group();
-    this.streetGroup = new THREE.Group();
     scene.add(this.group, this.streetGroup);
-    this._texCache = new Map();
-    this._streetCache = new Map();
-    this._mounted = new Map();
-    this._streetMounted = new Map();
-    this._lastKey = '';
   }
 
-  async load() {
+  async load(): Promise<this> {
     try {
-      this.data = await fetch(DATA + 'pois.json').then((r) => r.json());
+      this.data = await fetch(DATA + 'pois.json').then((r) => r.json()) as PoiData;
     } catch {
       this.data = { streets: [], pois: [] };
     }
@@ -121,19 +132,19 @@ export class PoiLayer {
     }));
   }
 
-  toggleCategory(key) {
+  toggleCategory(key: string): void {
     if (this.enabled.has(key)) this.enabled.delete(key);
     else this.enabled.add(key);
-    this._clearPois();
+    this.clearPois();
   }
 
-  _poiSprite(p) {
-    const style = CATEGORY_STYLE[p.c] || CATEGORY_STYLE.shop;
+  private poiSprite(p: Poi): THREE.Group {
+    const style = CATEGORY_STYLE[p.c] ?? CATEGORY_STYLE.shop;
     const cacheKey = `${p.n}|${p.c}`;
-    let entry = this._texCache.get(cacheKey);
+    let entry = this.texCache.get(cacheKey);
     if (!entry) {
       entry = labelTexture(p.n, style.colour);
-      this._texCache.set(cacheKey, entry);
+      this.texCache.set(cacheKey, entry);
     }
     const g = new THREE.Group();
     // Depth-tested text gets sliced in half by whatever building happens to be
@@ -193,11 +204,11 @@ export class PoiLayer {
    * drapes over camber, kerbs and slope rather than slicing through them.
    * Returns null only where the ground underneath is genuinely broken.
    */
-  _streetMesh(name, spot, major) {
-    let entry = this._streetCache.get(name);
+  private streetMesh(name: string, spot: StreetSpot, major: boolean): THREE.Mesh | null {
+    let entry = this.streetCache.get(name);
     if (!entry) {
       entry = streetTexture(name);
-      this._streetCache.set(name, entry);
+      this.streetCache.set(name, entry);
     }
     const aspect = entry.h / entry.w;
     // keep the label inside the carriageway it belongs to
@@ -206,13 +217,13 @@ export class PoiLayer {
 
     const sin = Math.sin(spot.a);
     const cos = Math.cos(spot.a);
-    const along = [sin, cos];        // down the street
-    const across = [cos, -sin];      // letter height, perpendicular
+    const along: [number, number] = [sin, cos];        // down the street
+    const across: [number, number] = [cos, -sin];      // letter height, perpendicular
 
     const segs = Math.max(4, Math.min(28, Math.round(len / 1.2)));
-    const pos = [];
-    const uv = [];
-    const idx = [];
+    const pos: number[] = [];
+    const uv: number[] = [];
+    const idx: number[] = [];
     let lo = Infinity;
     let hi = -Infinity;
 
@@ -253,19 +264,19 @@ export class PoiLayer {
     return mesh;
   }
 
-  _clearPois() {
-    for (const [, obj] of this._mounted) this.group.remove(obj);
-    this._mounted.clear();
+  private clearPois(): void {
+    for (const [, obj] of this.mounted) this.group.remove(obj);
+    this.mounted.clear();
   }
 
   /** Mount what is near, unmount what is not. Called every frame; cheap. */
-  update(x, z) {
+  update(x: number, z: number): void {
     if (!this.data) return;
     this.group.visible = this.showPois;
     this.streetGroup.visible = this.showStreets;
 
     if (this.showPois) {
-      const near = [];
+      const near: [number, Poi][] = [];
       for (const p of this.data.pois) {
         if (!this.enabled.has(p.c)) continue;
         const d = (p.x - x) ** 2 + (p.z - z) ** 2;
@@ -273,58 +284,58 @@ export class PoiLayer {
       }
       near.sort((a, b) => a[0] - b[0]);
       const keep = near.slice(0, MAX_POI_SPRITES);
-      const wanted = new Set();
+      const wanted = new Set<string>();
       for (const [, p] of keep) {
         const key = `${p.x},${p.z},${p.n}`;
         wanted.add(key);
-        if (this._mounted.has(key)) continue;
-        const obj = this._poiSprite(p);
+        if (this.mounted.has(key)) continue;
+        const obj = this.poiSprite(p);
         obj.position.set(p.x, this.world.height(p.x, p.z), p.z);
-        this._mounted.set(key, obj);
+        this.mounted.set(key, obj);
         this.group.add(obj);
       }
-      for (const [key, obj] of [...this._mounted]) {
+      for (const [key, obj] of [...this.mounted]) {
         if (!wanted.has(key)) {
           this.group.remove(obj);
-          this._mounted.delete(key);
+          this.mounted.delete(key);
         }
       }
-    } else if (this._mounted.size) {
-      this._clearPois();
+    } else if (this.mounted.size) {
+      this.clearPois();
     }
 
     if (this.showStreets) {
-      const wanted = new Set();
+      const wanted = new Set<string>();
       for (const st of this.data.streets) {
         for (const spot of st.at) {
           const d = (spot.x - x) ** 2 + (spot.z - z) ** 2;
           if (d > STREET_RADIUS * STREET_RADIUS) continue;
           const key = `${st.name}|${spot.x},${spot.z}`;
           wanted.add(key);
-          if (this._streetMounted.has(key)) continue;
-          const mesh = this._streetMesh(st.name, spot, st.major);
-          if (!mesh) { this._streetMounted.set(key, null); continue; }
+          if (this.streetMounted.has(key)) continue;
+          const mesh = this.streetMesh(st.name, spot, st.major);
+          if (!mesh) { this.streetMounted.set(key, null); continue; }
           // vertex heights are already absolute, so only the small lift off the
           // road surface is applied here
           mesh.position.set(spot.x, 0, spot.z);
-          this._streetMounted.set(key, mesh);
+          this.streetMounted.set(key, mesh);
           this.streetGroup.add(mesh);
         }
       }
-      for (const [key, obj] of [...this._streetMounted]) {
+      for (const [key, obj] of [...this.streetMounted]) {
         if (!wanted.has(key)) {
           if (obj) this.streetGroup.remove(obj);
-          this._streetMounted.delete(key);
+          this.streetMounted.delete(key);
         }
       }
-    } else if (this._streetMounted.size) {
-      for (const [, obj] of this._streetMounted) if (obj) this.streetGroup.remove(obj);
-      this._streetMounted.clear();
+    } else if (this.streetMounted.size) {
+      for (const [, obj] of this.streetMounted) if (obj) this.streetGroup.remove(obj);
+      this.streetMounted.clear();
     }
   }
 
   get stats() {
-    return { pois: this._mounted.size, streets: this._streetMounted.size };
+    return { pois: this.mounted.size, streets: this.streetMounted.size };
   }
 }
 

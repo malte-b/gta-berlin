@@ -1,4 +1,9 @@
-import { makeFromWorld, utm33 } from './geo.js';
+import { makeFromWorld, utm33, type XZ } from './geo';
+import type { HUD } from './hud';
+import type { Player } from './player';
+import type { World } from './world';
+
+interface Hit { name: string; lon: number; lat: number }
 
 /**
  * Deep links and address search.
@@ -12,29 +17,34 @@ import { makeFromWorld, utm33 } from './geo.js';
  * time and results are cached per query.
  */
 export class Locator {
-  constructor(world, player, hud) {
+  readonly world: World;
+  readonly player: Player;
+  readonly hud: HUD;
+  private readonly fromWorld: (x: number, z: number) => XZ;
+  private readonly cache = new Map<string, Hit[]>();
+  private busy = false;
+  private lastHash = '';
+
+  constructor(world: World, player: Player, hud: HUD) {
     this.world = world;
     this.player = player;
     this.hud = hud;
     this.fromWorld = makeFromWorld(world.origin);
-    this.cache = new Map();
-    this.busy = false;
-    this._lastHash = '';
   }
 
   /** World metres for a lon/lat, or null if it falls outside the mesh. */
-  toWorld(lon, lat) {
+  toWorld(lon: number, lat: number): XZ {
     const [e, n] = utm33(lon, lat);
     const x = e - this.world.origin.e;
     const z = -(n - this.world.origin.n);
     return [x, z];
   }
 
-  inCoverage(x, z) {
-    return this.world.nav ? this.world.nav.contains(x, z) : false;
+  inCoverage(x: number, z: number): boolean {
+    return this.world.nav.contains(x, z);
   }
 
-  shareUrl() {
+  shareUrl(): string {
     const p = this.player;
     const [lon, lat] = this.fromWorld(p.pos.x, p.pos.z);
     const params = [
@@ -46,21 +56,21 @@ export class Locator {
   }
 
   /** Push the current spot into the address bar, throttled by the caller. */
-  syncHash() {
+  syncHash(): void {
     const p = this.player;
     const [lon, lat] = this.fromWorld(p.pos.x, p.pos.z);
     const h = `${lat.toFixed(5)},${lon.toFixed(5)}&h=${p.yaw.toFixed(2)}&m=${p.mode}`;
-    if (h === this._lastHash) return;
-    this._lastHash = h;
+    if (h === this.lastHash) return;
+    this.lastHash = h;
     history.replaceState(null, '', `#${h}`);
   }
 
   /** Apply a #lat,lon&h=..&m=.. hash if one is present. Returns true if used. */
-  applyHash() {
+  applyHash(): boolean {
     const raw = location.hash.replace(/^#/, '');
     if (!raw) return false;
-    const parts = Object.create(null);
-    let coords = null;
+    const parts: Record<string, string> = Object.create(null);
+    let coords: number[] | null = null;
     for (const seg of raw.split('&')) {
       if (seg.includes('=')) {
         const [k, v] = seg.split('=');
@@ -79,10 +89,11 @@ export class Locator {
     return true;
   }
 
-  async geocode(query) {
+  async geocode(query: string): Promise<Hit[] | null> {
     const key = query.trim().toLowerCase();
     if (!key) return null;
-    if (this.cache.has(key)) return this.cache.get(key);
+    const known = this.cache.get(key);
+    if (known) return known;
     if (this.busy) return null;
     this.busy = true;
     try {
@@ -91,8 +102,8 @@ export class Locator {
         + `?format=jsonv2&limit=5&countrycodes=de&q=${encodeURIComponent(query + ', Berlin')}`;
       const res = await fetch(url, { headers: { 'Accept-Language': 'de' } });
       if (!res.ok) throw new Error('geocoder ' + res.status);
-      const list = await res.json();
-      const hits = list.map((r) => ({
+      const list = await res.json() as { display_name: string; lon: string; lat: string }[];
+      const hits: Hit[] = list.map((r) => ({
         name: r.display_name,
         lon: Number(r.lon),
         lat: Number(r.lat),
@@ -109,12 +120,12 @@ export class Locator {
    * Only places inside the downloaded tiles can be entered - everywhere else
    * has no ground to stand on.
    */
-  async goTo(query) {
-    let hits;
+  async goTo(query: string): Promise<string> {
+    let hits: Hit[] | null;
     try {
       hits = await this.geocode(query);
     } catch (err) {
-      return `lookup failed: ${err.message}`;
+      return `lookup failed: ${(err as Error).message}`;
     }
     if (!hits) return 'still looking up the last one';
     if (!hits.length) return `no match for "${query}"`;

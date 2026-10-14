@@ -1,88 +1,63 @@
-import { makeFromWorld } from './geo.js';
-import { MODES } from './player.js';
+import { makeFromWorld, type XZ } from './geo';
+import { MODES, type Player } from './player';
+import type { PoiLayer } from './pois';
+import type { World } from './world';
 
-const MAP_TEX = 256;
+export interface RenderInfo {
+  calls: number;
+  triangles: number;
+}
+
+function el<T extends HTMLElement = HTMLElement>(id: string): T {
+  const e = document.getElementById(id);
+  if (!e) throw new Error(`missing #${id}`);
+  return e as T;
+}
 
 /**
  * HUD: minimap, position readout, speed and diagnostics.
  *
- * The minimap is drawn from the same heightfields the physics uses, so it
- * costs no extra download and always agrees with what you can walk through.
- * Ground elevation gives the base shading and anything standing more than a
- * couple of metres above it - buildings, trees, the elevated railway - is
- * picked out on top.
+ * The minimap is the world's own 1 px-per-metre map - OSM ground cover with
+ * building footprints from the navigation grid on top - so it always agrees
+ * with where you can actually go.
  */
 export class HUD {
-  constructor(world) {
+  readonly world: World;
+  pois: PoiLayer | null = null;
+  area = 'Kreuzberg';
+  private readonly canvas = el<HTMLCanvasElement>('map');
+  private readonly ctx = this.canvas.getContext('2d')!;
+  private readonly statsEl = el('stats');
+  private readonly placeEl = el('place');
+  private readonly speedEl = el('speed');
+  private readonly hintEl = el('hint');
+  private readonly spans = [180, 420, 1200];
+  private zoom = 1;
+  private hintTimer = 0;
+  private readonly fromWorld: (x: number, z: number) => XZ;
+
+  constructor(world: World) {
     this.world = world;
-    this.canvas = document.getElementById('map');
-    this.ctx = this.canvas.getContext('2d');
-    this.statsEl = document.getElementById('stats');
-    this.placeEl = document.getElementById('place');
-    this.speedEl = document.getElementById('speed');
-    this.hintEl = document.getElementById('hint');
-    this.cache = new Map();
-    this.zoom = 1;
-    this.spans = [180, 420, 1200];
     this.fromWorld = makeFromWorld(world.origin);
-    this._hintTimer = 0;
-    this.area = 'Kreuzberg';
-    document.getElementById('maplabel').textContent = `M — ${this.spans[this.zoom]} M`;
+    this.updateLabel();
   }
 
-  _tileTexture(t) {
-    if (this.cache.has(t.key)) return this.cache.get(t.key);
-    const hf = t.hf;
-    if (!hf) return null;
-    const c = document.createElement('canvas');
-    c.width = c.height = MAP_TEX;
-    const g = c.getContext('2d');
-    const img = g.createImageData(MAP_TEX, MAP_TEX);
-
-    // elevation range across this tile, for contrast
-    let lo = Infinity, hi = -Infinity;
-    for (let i = 0; i < hf.ground.length; i += 7) {
-      const v = hf.ground[i];
-      if (v < lo) lo = v;
-      if (v > hi) hi = v;
-    }
-    const span = Math.max(1, hi - lo);
-
-    for (let r = 0; r < MAP_TEX; r++) {
-      const sr = Math.min(hf.nz - 1, Math.floor((r / MAP_TEX) * hf.nz));
-      for (let cc = 0; cc < MAP_TEX; cc++) {
-        const sc = Math.min(hf.nx - 1, Math.floor((cc / MAP_TEX) * hf.nx));
-        const k = sr * hf.nx + sc;
-        const rel = (hf.ground[k] - lo) / span;
-        const rise = (hf.top[k] - hf.ground[k]) * hf.hscale;
-        const o = (r * MAP_TEX + cc) * 4;
-        let rr, gg, bb;
-        if (rise > 2.2) {
-          const t2 = Math.min(1, rise / 26);
-          rr = 190 + t2 * 55; gg = 184 + t2 * 50; bb = 170 + t2 * 40;
-        } else {
-          rr = 34 + rel * 26; gg = 37 + rel * 28; bb = 44 + rel * 30;
-        }
-        img.data[o] = rr; img.data[o + 1] = gg; img.data[o + 2] = bb; img.data[o + 3] = 235;
-      }
-    }
-    g.putImageData(img, 0, 0);
-    this.cache.set(t.key, c);
-    return c;
+  private updateLabel(): void {
+    el('maplabel').textContent = `M — ${this.spans[this.zoom]} M`;
   }
 
-  cycleZoom() {
+  cycleZoom(): void {
     this.zoom = (this.zoom + 1) % this.spans.length;
-    document.getElementById('maplabel').textContent = `M — ${this.spans[this.zoom]} M`;
+    this.updateLabel();
   }
 
-  hint(text, seconds = 2.4) {
+  hint(text: string, seconds = 2.4): void {
     this.hintEl.textContent = text;
     this.hintEl.classList.add('on');
-    this._hintTimer = seconds;
+    this.hintTimer = seconds;
   }
 
-  draw(player, dt, fps) {
+  draw(player: Player, dt: number, fps: number, info: RenderInfo): void {
     const { ctx } = this;
     const size = this.canvas.width;
     const scale = size / this.spans[this.zoom];
@@ -96,13 +71,13 @@ export class HUD {
     ctx.fillStyle = '#15181e';
     ctx.fillRect(0, 0, size, size);
 
-    for (const t of this.world.tiles.values()) {
-      const tex = this._tileTexture(t);
-      if (!tex) continue;
-      const b = t.info.bbox;                 // [minX,minY,minZ, maxX,maxY,maxZ]
-      const sx = size / 2 + (b[0] - px) * scale;
-      const sy = size / 2 + (b[2] - pz) * scale;
-      ctx.drawImage(tex, sx, sy, (b[3] - b[0]) * scale, (b[5] - b[2]) * scale);
+    const map = this.world.map;
+    const nav = this.world.nav;
+    if (map) {
+      ctx.imageSmoothingEnabled = scale < 1;
+      ctx.drawImage(map,
+        size / 2 + (nav.minX - px) * scale, size / 2 + (nav.minZ - pz) * scale,
+        nav.nx * nav.cell * scale, nav.nz * nav.cell * scale);
     }
 
     ctx.translate(size / 2, size / 2);
@@ -131,15 +106,15 @@ export class HUD {
     const s = this.world.stats;
     const mode = player.flying ? 'flying' : MODES[player.mode].label;
     this.statsEl.innerHTML =
-      `<b>${fps.toFixed(0)}</b> fps · <b>${s.ready}</b>/${s.total} tiles`
-      + (s.queued ? ` · ${s.queued} loading` : '')
-      + `<br><b>${s.hi}</b> at full texture res`
+      `<b>${fps.toFixed(0)}</b> fps · <b>${info.calls}</b> draws · `
+      + `<b>${(info.triangles / 1e6).toFixed(2)}</b> M tris`
+      + `<br><b>${s.buildings}</b> buildings · <b>${s.trees}</b> trees`
       + `<br>x <b>${px.toFixed(0)}</b>  z <b>${pz.toFixed(0)}</b>  alt <b>${player.pos.y.toFixed(1)}</b> m`
       + `<br>${mode}`;
 
-    if (this._hintTimer > 0) {
-      this._hintTimer -= dt;
-      if (this._hintTimer <= 0) this.hintEl.classList.remove('on');
+    if (this.hintTimer > 0) {
+      this.hintTimer -= dt;
+      if (this.hintTimer <= 0) this.hintEl.classList.remove('on');
     }
   }
 }

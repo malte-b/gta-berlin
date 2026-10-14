@@ -1,23 +1,14 @@
 """Navigation grid: where you can actually walk and drive.
 
-The heightfield straight off the mesh is a *surface* model - it includes
-parked cars, kiosks, bollards, tree canopies and photogrammetric noise. Testing
-movement against it directly treats every one of those as a wall, which is why
-open pavement ends up full of invisible barriers.
-
-So the surface is first separated into terrain and objects using a grey-scale
-morphological opening. An opening removes any raised feature narrower than its
-structuring element while leaving wider ones intact: at a 21 m element, cars,
-trees and street furniture disappear and building blocks survive. What is left
-is the ground you walk on; what was removed is what blocks you.
-
-Afterwards the walkable mask is cleaned up morphologically and flood filled, so
-isolated pockets can be reported rather than silently stranding the player.
+Built by build_world.py from the laser-scan terrain plus everything standing
+on it - building footprints, tree trunks, water - and helpers here for the
+morphological clean-up and connectivity analysis that follow.
 
 Output "BTN1", one grid for the whole world:
     f32 minX, minZ   f32 cell   u32 nx, nz   f32 hmin, hscale
     u16[n] terrain            ground height to stand on
-    u8[n]  flags              bit0 walkable, bit1 drivable
+    u8[n]  flags              bit0 walkable, bit1 drivable, bit2 open sky,
+                              bit3 nothing overhead, bit4 building
 """
 import struct
 from collections import deque
@@ -26,6 +17,7 @@ WALKABLE = 1
 DRIVABLE = 2
 OPEN_SKY = 4      # 7 m of headroom all round, i.e. not under a tree
 SKY_RAW  = 8      # headroom directly overhead, un-eroded
+BUILDING = 16     # inside a building footprint (camera collision)
 
 
 def _running(vals, radius, want_max):

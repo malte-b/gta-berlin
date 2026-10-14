@@ -121,7 +121,7 @@ def main():
                     help="re-query Overpass instead of using the cached response")
     args = ap.parse_args()
 
-    manifest = json.load(open(os.path.join(OUT, "mesh_manifest.json")))
+    manifest = json.load(open(os.path.join(OUT, "world.json")))
     origin = manifest["origin"]
     world = manifest["world"]
 

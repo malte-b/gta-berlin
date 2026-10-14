@@ -1,8 +1,8 @@
 import * as THREE from 'three';
+import type { World } from './world';
 
 const GRAVITY = 24.0;
 const JUMP = 8.2;
-const EYE = 1.72;
 
 // Turning on the keyboard, so the whole game is playable with one hand.
 const TURN_RATE = 1.9;          // radians per second
@@ -26,7 +26,18 @@ const LAND_COOLDOWN = 0.5;      // stops an immediate re-launch on touchdown
  * fit anywhere you can stand. `stride` is how many metres of travel make one
  * full animation cycle, so limbs stay locked to the ground at any speed.
  */
-export const MODES = {
+export type Mode = 'foot' | 'bike' | 'scooter' | 'car';
+
+export interface ModeConfig {
+  label: string;
+  cruise: number;
+  sprint: number;
+  nav: 'walk' | 'drive';
+  stride: number;
+  eye: number;
+}
+
+export const MODES: Record<Mode, ModeConfig> = {
   foot:    { label: 'on foot',   cruise: 4.4,  sprint: 9.0,  nav: 'walk',  stride: 1.62, eye: 1.72 },
   bike:    { label: 'on a bike', cruise: 6.8,  sprint: 13.5, nav: 'walk',  stride: 3.10, eye: 1.55 },
   scooter: { label: 'on an e-scooter', cruise: 6.2, sprint: 8.4, nav: 'walk', stride: 2.4, eye: 1.78 },
@@ -44,22 +55,25 @@ const RIDE_BRAKE = 12.0;
 const RIDE_DRAG = 1.4;
 
 export class Player {
-  constructor(world) {
+  readonly world: World;
+  readonly pos = new THREE.Vector3();
+  readonly vel = new THREE.Vector3();
+  yaw = 0;
+  pitch = -0.16;
+  onGround = true;
+  mode: Mode = 'foot';
+  heading = 0;          // facing of a vehicle, independent of the camera
+  speed = 0;            // scalar speed for vehicle modes
+  camMode = 0;
+  flying = false;
+  launched = false;
+  strideDist = 0;       // metres travelled, drives the animation phase
+  lean = 0;
+  takeoffCooldown = 0;
+  justLanded = 0;
+
+  constructor(world: World) {
     this.world = world;
-    this.pos = new THREE.Vector3();
-    this.vel = new THREE.Vector3();
-    this.yaw = 0;
-    this.pitch = -0.16;
-    this.onGround = true;
-    this.mode = 'foot';
-    this.heading = 0;          // facing of a vehicle, independent of the camera
-    this.speed = 0;            // scalar speed for vehicle modes
-    this.camMode = 0;
-    this.flying = false;
-    this.strideDist = 0;       // metres travelled, drives the animation phase
-    this.lean = 0;
-    this.takeoffCooldown = 0;
-    this.justLanded = 0;
   }
 
   get cfg() { return MODES[this.mode]; }
@@ -76,10 +90,9 @@ export class Player {
 
   get stridePhase() { return (this.strideDist / this.cfg.stride) * Math.PI * 2; }
 
-  spawn(x, z) {
+  spawn(x: number, z: number): void {
     const w = this.world;
-    const [fx, fz] = w.nav ? w.freeSpot(x, z, 200, this.driving)
-                           : (w.streetLevel ? w.streetLevel(x, z) : w.freeSpot(x, z));
+    const [fx, fz] = w.freeSpot(x, z, 200, this.driving);
     this.pos.set(fx, w.height(fx, fz), fz);
     this.vel.set(0, 0, 0);
     this.speed = 0;
@@ -91,17 +104,15 @@ export class Player {
    * on is off limits to it - without the snap you change mode and find
    * yourself walled into a single square metre.
    */
-  setMode(mode) {
-    if (!MODES[mode]) return this.mode;
-    this.mode = mode;
+  setMode(mode: string): Mode {
+    if (!(mode in MODES)) return this.mode;
+    this.mode = mode as Mode;
     this.flying = false;
     const w = this.world;
-    if (w.nav) {
-      const spot = w.nav.nearestPassable(this.pos.x, this.pos.z, this.driving, 140);
-      if (spot) {
-        this.pos.x = spot[0];
-        this.pos.z = spot[1];
-      }
+    const spot = w.nav.nearestPassable(this.pos.x, this.pos.z, this.driving, 140);
+    if (spot) {
+      this.pos.x = spot[0];
+      this.pos.z = spot[1];
     }
     this.pos.y = w.height(this.pos.x, this.pos.z);
     this.heading = this.yaw;
@@ -110,25 +121,23 @@ export class Player {
     return this.mode;
   }
 
-  toggleMode(mode) {
+  toggleMode(mode: Mode): Mode {
     return this.setMode(this.mode === mode ? 'foot' : mode);
   }
 
-  _passable(x, z) {
-    const w = this.world;
-    return w.canStep ? w.canStep(this.pos.x, this.pos.z, x, z, this.driving)
-                     : !w.solid(x, z);
+  private passable(x: number, z: number): boolean {
+    return this.world.canStep(this.pos.x, this.pos.z, x, z, this.driving);
   }
 
   /** Move to (nx, nz) if allowed, sliding along whichever axis is free. */
-  _move(nx, nz) {
+  private move(nx: number, nz: number): boolean {
     // The navigation grid already accounts for body clearance, so only a small
     // cross is probed here. Sampling a wide ring would re-introduce exactly the
     // invisible walls the grid exists to remove.
     const r = 0.4;
-    const free = (x, z) => this._passable(x, z)
-      && this._passable(x + r, z) && this._passable(x - r, z)
-      && this._passable(x, z + r) && this._passable(x, z - r);
+    const free = (x: number, z: number) => this.passable(x, z)
+      && this.passable(x + r, z) && this.passable(x - r, z)
+      && this.passable(x, z + r) && this.passable(x, z - r);
     if (free(nx, nz)) { this.pos.x = nx; this.pos.z = nz; return false; }
     if (free(nx, this.pos.z)) { this.pos.x = nx; return true; }
     if (free(this.pos.x, nz)) { this.pos.z = nz; return true; }
@@ -136,7 +145,7 @@ export class Player {
   }
 
   /** Q and E turn left and right, in every mode. */
-  _turnInput(keys) {
+  private turnInput(keys: Set<string>): number {
     return (keys.has('KeyQ') ? 1 : 0) - (keys.has('KeyE') ? 1 : 0);
   }
 
@@ -148,26 +157,26 @@ export class Player {
    * the one-handed scheme could turn and walk but never actually fly.
    * Clamped to the same limits the mouse look uses.
    */
-  _pitchInput(keys, dt) {
+  private pitchInput(keys: Set<string>, dt: number): void {
     const d = (keys.has('KeyR') ? 1 : 0) - (keys.has('KeyF') ? 1 : 0);
     if (!d) return;
     this.pitch = Math.max(PITCH_MIN,
       Math.min(PITCH_MAX, this.pitch + d * PITCH_RATE * dt));
   }
 
-  update(dt, keys) {
+  update(dt: number, keys: Set<string>): void {
     if (this.takeoffCooldown > 0) this.takeoffCooldown -= dt;
     if (this.justLanded > 0) this.justLanded -= dt;
-    this._pitchInput(keys, dt);
-    if (this.flying) return this._updateFly(dt, keys);
-    if (this.vehicle) return this._updateVehicle(dt, keys);
-    return this._updateFoot(dt, keys);
+    this.pitchInput(keys, dt);
+    if (this.flying) return this.updateFly(dt, keys);
+    if (this.vehicle) return this.updateVehicle(dt, keys);
+    return this.updateFoot(dt, keys);
   }
 
-  _updateFoot(dt, keys) {
+  private updateFoot(dt: number, keys: Set<string>): void {
     const w = this.world;
     const cfg = this.cfg;
-    this.yaw += this._turnInput(keys) * TURN_RATE * dt;
+    this.yaw += this.turnInput(keys) * TURN_RATE * dt;
 
     // look to the sky and lean into it: take off
     if (this.pitch > TAKEOFF_PITCH && keys.has('KeyW') && this.takeoffCooldown <= 0) {
@@ -207,7 +216,7 @@ export class Player {
     this.vel.y -= GRAVITY * dt;
 
     const before = { x: this.pos.x, z: this.pos.z };
-    this._move(this.pos.x + vx * dt, this.pos.z + vz * dt);
+    this.move(this.pos.x + vx * dt, this.pos.z + vz * dt);
     this.strideDist += Math.hypot(this.pos.x - before.x, this.pos.z - before.z);
     this.pos.y += this.vel.y * dt;
 
@@ -219,7 +228,7 @@ export class Player {
     }
   }
 
-  _updateVehicle(dt, keys) {
+  private updateVehicle(dt: number, keys: Set<string>): void {
     const w = this.world;
     const cfg = this.cfg;
     const car = this.mode === 'car';
@@ -240,7 +249,7 @@ export class Player {
     const grip = car ? 1 / (1 + Math.abs(this.speed) * 0.055)
                      : 1 / (1 + Math.abs(this.speed) * 0.030);
     const steer = Math.max(-1, Math.min(1,
-      (keys.has('KeyA') ? 1 : 0) - (keys.has('KeyD') ? 1 : 0) + this._turnInput(keys)));
+      (keys.has('KeyA') ? 1 : 0) - (keys.has('KeyD') ? 1 : 0) + this.turnInput(keys)));
     const rate = car ? 2.5 : 3.1;
     if (Math.abs(this.speed) > 0.2) {
       this.heading += steer * dt * rate * grip * Math.sign(this.speed);
@@ -251,7 +260,7 @@ export class Player {
 
     const dx = -Math.sin(this.heading) * this.speed * dt;
     const dz = -Math.cos(this.heading) * this.speed * dt;
-    const hit = this._move(this.pos.x + dx, this.pos.z + dz);
+    const hit = this.move(this.pos.x + dx, this.pos.z + dz);
     if (hit) this.speed *= car ? -0.22 : -0.12;
 
     this.strideDist += Math.abs(this.speed) * dt;
@@ -260,8 +269,8 @@ export class Player {
     this.onGround = true;
   }
 
-  _updateFly(dt, keys) {
-    this.yaw += this._turnInput(keys) * TURN_RATE_AIR * dt;
+  private updateFly(dt: number, keys: Set<string>): void {
+    this.yaw += this.turnInput(keys) * TURN_RATE_AIR * dt;
     const fast = keys.has('ShiftLeft') || keys.has('ShiftRight');
     const speed = fast ? 160 : 38;
     const s = Math.sin(this.yaw), c = Math.cos(this.yaw);
@@ -297,16 +306,14 @@ export class Player {
   }
 
   /** Put the player back on their feet wherever they came down. */
-  land() {
+  land(): void {
     const w = this.world;
     this.flying = false;
     this.launched = false;
     this.takeoffCooldown = LAND_COOLDOWN;
     this.justLanded = 0.9;
-    if (w.nav) {
-      const spot = w.nav.nearestPassable(this.pos.x, this.pos.z, this.driving, 60);
-      if (spot) { this.pos.x = spot[0]; this.pos.z = spot[1]; }
-    }
+    const spot = w.nav.nearestPassable(this.pos.x, this.pos.z, this.driving, 60);
+    if (spot) { this.pos.x = spot[0]; this.pos.z = spot[1]; }
     this.pos.y = w.height(this.pos.x, this.pos.z);
     this.vel.set(0, 0, 0);
     this.onGround = true;
@@ -314,21 +321,21 @@ export class Player {
     if (this.pitch > 0.1) this.pitch = 0.1;
   }
 
-  toggleFly() {
+  toggleFly(): boolean {
     this.flying = !this.flying;
     if (this.flying) {
       this.launched = false;
       this.pos.y = Math.max(this.pos.y, this.world.height(this.pos.x, this.pos.z) + 40);
     } else {
       const w = this.world;
-      const spot = w.nav && w.nav.nearestPassable(this.pos.x, this.pos.z, this.driving, 200);
+      const spot = w.nav.nearestPassable(this.pos.x, this.pos.z, this.driving, 200);
       if (spot) { this.pos.x = spot[0]; this.pos.z = spot[1]; }
       this.pos.y = w.height(this.pos.x, this.pos.z);
     }
     return this.flying;
   }
 
-  applyCamera(cam) {
+  applyCamera(cam: THREE.PerspectiveCamera): THREE.Vector3 {
     if (this.flying) {
       cam.position.set(this.pos.x, this.pos.y, this.pos.z);
       cam.rotation.set(0, 0, 0);
@@ -371,7 +378,7 @@ export class Player {
     const probe = new THREE.Vector3();
     for (let i = 0; i < 10; i++) {
       probe.copy(head).addScaledVector(dir, r);
-      if (probe.y >= w.height(probe.x, probe.z) + 0.55) break;
+      if (!w.blocksCamera(probe.x, probe.y, probe.z)) break;
       r *= 0.78;
       if (r < 1.4) { r = 1.4; break; }
     }

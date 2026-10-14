@@ -2,17 +2,31 @@
 
 DISCLAIMER: THIS APP WAS PURELY VIBECODED
 
-A drivable, walkable 3D Berlin in the browser, built entirely from the city's
-own open geodata. Inspired by [sf.thijs.gg](https://sf.thijs.gg/) — but where
-that project renders Apple Maps data, this one runs on data Berlin publishes
-for anyone to use.
+A drivable, walkable 3D Berlin in the browser, built entirely from open data.
+Inspired by [sf.thijs.gg](https://sf.thijs.gg/) — but where that project
+renders Apple Maps data, this one runs on data Berlin and OpenStreetMap publish
+for anyone to use. The goal is an open-world game feel at street level, which
+is where aerial datasets are weakest — so each layer comes from the source that
+is best at it:
+
+| layer | source | why this one |
+|---|---|---|
+| terrain | Berlin airborne laser scan (ALS), ground returns only | the only bare-earth surface at 1 m; Kreuzberg has 33 m of relief |
+| buildings | OpenStreetMap Simple 3D Buildings, modelled by [OSM2World](https://osm2world.org) | crisp geometry and textures at eye level, correct roof shapes and storeys |
+| trees | Baumkataster (Berlin's tree cadastre) | every street and park tree, with surveyed height and crown diameter |
+| streets, parks, water | OpenStreetMap | painted onto the terrain |
+| street furniture | Straßenbefahrung 2014 (Berlin's street survey), modelled by OSM2World | every surveyed sign, bollard, bin, bench, bus shelter and bike stand, at its measured position |
+| ground and roof photos | Berlin true orthophotos 2024 (20 cm) | real markings, crossings, paths and roofs, draped from above |
 
 ```bash
 npm install
 npm run dev          # http://localhost:5173
+npm run typecheck
 ```
 
-The repo ships without the heavy files. See **Building the world** below.
+The client is TypeScript on three.js. The built world (~18 MB) is not in the
+repository: `web/public/data/` is git-ignored, so run the pipeline below once
+before `npm run dev`.
 
 ---
 
@@ -21,210 +35,243 @@ The repo ships without the heavy files. See **Building the world** below.
 | | |
 |---|---|
 | `W A S D` | move · `Shift` sprint · `Space` jump |
-| `F` | car · `B` bike · `V` e-scooter |
-| `H` | free flight (`Shift` boost, `Space` / `Ctrl` up-down) |
+| `Q` `E` | turn · `R` `F` tilt the view (fully playable without a mouse) |
+| `1` `2` `3` `4` | on foot · bike · e-scooter · car |
+| look up and walk forward | take off; fly into the ground to land · `H` toggles flight |
 | `/` | search for an address, Enter to travel there |
 | `C` | camera: third person · close · first person |
 | `N` | day / night |
-| `G` | texture detail: near-field only ↔ every tile |
-| `M` | minimap zoom · `R` respawn |
+| `G` | shadows on / off · `O` photogrammetric mesh ↔ open-data view · `K` original ↔ cleaned mesh |
+| `T` | labels · `M` minimap zoom · `X` respawn |
 | link | copies a URL pointing at exactly where you are standing |
-| mouse | look (click the canvas to capture the pointer) |
-
----
-
-## The data
-
-The game renders the **3D-Meshmodell Berlin** — a photogrammetric mesh derived
-from the June 2025 aerial survey, published as open data by the
-Senatsverwaltung für Wirtschaft, Energie und Betriebe via the
-[Berlin 3D download portal](https://www.businesslocationcenter.de/en/economic-atlas/download-portal/).
-
-It is a single continuous skin: ground, buildings, bridges and trees are all
-one surface, with photography baked into the texture. Each downloaded tile is
-a folder holding a Wavefront OBJ and up to seven JPEG atlas pages.
-
-Currently loaded: **9 tiles, ~1.1 × 1.1 km over Kreuzberg** (Bergmannkiez,
-centred on 52.4853 N, 13.3853 E), **3,013,055 triangles**.
-
-Two properties of the files make the whole pipeline simple:
-
-* vertices are absolute **EPSG:25833** (ETRS89 / UTM 33N) in metres, which is
-  already a metric grid — so the game world is a plain translation of it, with
-  no reprojection anywhere;
-* faces arrive pre-sorted by `usemtl`, so each atlas page becomes one
-  contiguous draw range and no per-vertex material id is needed.
-
-The world origin is the Brandenburger Tor, so in-game `x` / `z` are just metres
-from there.
-
-### Also in the repo, not currently used by the game
-
-`pipeline/build.py` builds a much larger world (6 × 5 km of central Berlin,
-26,705 buildings) from **LoD2 CityGML** plus OpenStreetMap. It is untextured
-but covers far more ground, and it downloads directly from
-`https://gdi.berlin.de/data/a_lod2/atom/` with no portal in the way. Kept
-because the two are complementary: the mesh looks real, the LoD2 world is
-large. Both are `dl-de/zero-2.0`.
-
-The airborne laser scan (ALS point cloud) is **not** used. LoD2 and the mesh
-already carry the geometry, and it is very large — nothing here downloads it.
 
 ---
 
 ## Building the world
 
-Download tile folders from the portal into `data/`, one folder per tile, then:
+```bash
+brew install openjdk          # OSM2World needs Java 17+
+python3 pipeline/build_world.py
+python3 pipeline/build_pois.py
+python3 pipeline/set_spawn.py 52.48475 13.38623 --face "Cafe do Brazil"   # optional
+```
+
+`build_world.py` takes `--area E0 N0 E1 N1` (EPSG:25833 metres; the default is
+Bergmannkiez and the Kreuzberg, 1.1 × 1.1 km), `--texture-res` (largest
+building texture edge, default 1024; OSM2World's own default is 512, its CC0
+textures are 2048) and `--refresh` to re-query OSM
+and the tree cadastre. OSM2World is downloaded into `tools/` on first run.
+Everything else is **standard-library Python** — no numpy, GDAL or PDAL —
+and every download is cached under `cache/`, so a rebuild takes seconds.
+
+Output in `web/public/data/`:
+
+| file | what |
+|---|---|
+| `terrain.bin` | ALS ground, 1 m grid, `BTT1` |
+| `buildings.glb` | every building, textured, in game-world metres — plain glTF 2.0 |
+| `trees.bin` | cadastre trees with sizes, `BTR1` |
+| `props.glb` | one OSM2World model per kind of street furniture, facing north |
+| `props.bin` | where each copy stands and which way it faces, `BPR1` |
+| `cover.png` | ground cover mask, 0.5 m, one class per channel |
+| `ground/` | CC0 PBR textures for asphalt, paving, grass |
+| `nav.bin` | where you can walk and drive, `BTN1` |
+| `env/` | CC0 sky HDRI from Poly Haven, for image-based lighting |
+| `world.json` | manifest: bounds, files, spawn, attribution |
+
+All of it is engine-neutral — a glTF and documented binary grids — so the same
+build can feed another client (a Godot port is planned).
+
+---
+
+### Optional: the photogrammetric mesh (not open data)
+
+For a photographic look, the game can also draw the **3D-Meshmodell Berlin**
+(aerial survey 2025, Berlin Partner für Wirtschaft und Technologie). Download
+tile folders from the [Berlin 3D download portal](https://www.businesslocationcenter.de/berlin3d-downloadportal/)
+into `data/`, then:
 
 ```bash
 python3 pipeline/build_mesh.py
 ```
 
-Flags: `--hi 8192 --lo 2048` to keep full detail, `--skip-textures` for
-geometry only. The pipeline is **pure standard-library Python** — no numpy, no
-pyproj, no GDAL. Texture resizing uses `sips`, which ships with macOS.
+Optionally clean it against the open reference data:
 
-Output lands in `web/public/data/`:
+```bash
+python3 pipeline/clean_mesh.py
+```
 
-| file | what |
-|---|---|
-| `m_<tile>.bin` | geometry, `BTM1` |
-| `h_<tile>.bin` | heightfield, `BTH1` |
-| `t_<tile>_<page>_{hi,lo}.jpg` | atlas pages at two levels |
-| `mesh_manifest.json` | tile index, bounds, attribution |
+This presses street clutter (parked cars, bumps, noise within 2 m of the
+ground, outside buildings) flat onto the laser-scan terrain, and removes thin
+ghosts - cranes, floating fragments - standing where the laser scan saw nothing
+that high. Wide structures are kept, so buildings finished after the scan
+survive. The untouched tiles stay as `m_*.raw.bin` and are what the game
+shows by default; `K` switches to the cleaned mesh. Removing a crane also
+removes the bit of photographed skin it was fused to, so under the cleaned
+mesh the orthophoto-draped laser terrain is drawn 15 cm lower, where it is
+hidden by the flattened ground and shows only through those holes.
 
----
+When `mesh_manifest.json` exists the game starts in the mesh view; `O` swaps
+to the open-data scene. The mesh is only drawn: walking, driving and ground
+height still come from the ALS terrain and the OSM navigation grid, which agree
+with the mesh surface to about ±10 cm on open streets (median 0.00 m) but know
+a pavement from a parked car or a tree canopy.
+
+**Licence:** the mesh is *not* open data (daten.berlin.de lists it as
+"other-closed"). Its [terms](https://www.businesslocationcenter.de/berlin3d-downloadportal/resources/terms/terms.de.html)
+allow non-commercial use only (2.4.1), forbid passing the data on (2.4.2) and
+require written consent from Berlin Partner before publishing renderings,
+stills or visualisations (2.4.4). That is why `web/public/data/` is
+git-ignored: keep mesh builds local unless you have that consent.
 
 ## How it works
 
-### Geometry: 10 bytes per vertex
+### Terrain from 37 GB zip files, without downloading them
 
-Positions are quantised to unsigned shorts against each tile's bounding box
-and expanded in the vertex shader from a `qmin` / `qscale` uniform pair — 5.8 mm
-precision over a 380 m tile. UVs are unsigned shorts too, but flagged
-`normalized`, so the GPU hands the shader a plain 0..1 float for free.
+Berlin publishes its laser scan as a classified point cloud (~10 points/m²),
+one LAS file per km — but only inside nine regional zip archives of 1–50 GB
+each. The server answers HTTP range requests, so `pipeline/als.py` never
+downloads an archive: it reads the zip's central directory from the end of the
+file, then fetches each wanted tile as a single byte range, inflates it as it
+streams in, and reduces it to a 1 m grid on the fly. About a minute per km²;
+only the grid is cached.
 
-Normals are not stored at all. The mesh has none, and the fragment shader
-reconstructs exact flat normals from screen-space derivatives, which costs
-nothing in the vertex buffer.
+Only class 2 (ground) is kept. Under buildings there are no ground returns, so
+those holes are filled from a mean pyramid and relaxed smooth — measured cells
+keep their surveyed value.
 
-### Textures: the memory problem
+**Is the terrain worth it?** In this area, yes, clearly: walkable ground spans
+33 m (33.8–66.8 m above sea level), half of it lies more than 2 m off a flat
+plane, and even a single 100 m block typically has 5.5 m of relief. In flatter
+parts of Berlin the case is weaker, and the official DGM1 — a 1 m terrain
+model derived from the same scan, in 2 km tiles — would be a lighter source
+for very large areas.
 
-A full atlas page is 8192 × 8192. Expanded to RGBA with mipmaps that is roughly
-340 MB on the GPU, and there are nine tiles. Holding them all at full size is
-not an option in a browser.
+### Buildings: let OSM2World interpret the tags
 
-So every page is written at two levels. Every tile loads its small atlas
-immediately, and only the handful nearest the camera are upgraded — including,
-always, the tile the player is standing in. Tiles that drop out release their
-large textures. `G` switches between near-field-only and everything.
+OSM2World is the reference implementation of Simple 3D Buildings — the same
+scheme OSM Buildings and F4 Map read: `height`, `building:levels`,
+`roof:shape`, `building:part`, `building:colour`, `building:material` and the
+rest. The pipeline does not re-implement any of it; it hands OSM2World the raw
+buildings and post-processes the glTF it writes, using its standard style:
+plaster, brick, concrete and roof-tile PBR textures, and a window layer laid
+out storey by storey.
+
+Three things are fixed up in place:
+
+* **Reprojection.** OSM2World works in its own local projection. Its footprint
+  vertices are matched to the OSM nodes they came from and an affine transform
+  to UTM 33 is fitted by least squares, which absorbs both its projection and
+  the 1.3° meridian convergence without knowing either.
+* **Placement.** OSM2World runs without terrain, so each building is lifted
+  onto the laser-scan ground at the lowest point under its footprint — on a
+  slope the uphill side sinks into the hill, and nothing ever floats.
+* **Colour.** Tagged colours are kept. Untagged buildings all share one default
+  tint, so they are moved onto tinted copies of the same materials, picked per
+  building from a Berlin facade palette.
+
+In the browser the ~2,350 per-building meshes are merged into one mesh per
+(chunk, material), which keeps the frame at ~150–250 draw calls.
+
+### Filling in what OSM does not map
+
+Most buildings in OSM have an outline but no `height` and no
+`building:levels`, and OSM2World then has to guess. Before it runs,
+`complete_3d_tags` in `pipeline/osm3d.py` patches a copy of the OSM data:
+
+* **No height at all:** the laser scan records roofs as well as ground, so
+  the median of roof-above-ground inside the outline becomes `height`, with
+  storeys estimated at 3.3 m and `roof:shape=flat` (the median is a level,
+  not a shape). Berlin's scan has no building class - roofs are filed as
+  "high vegetation" with the tree crowns - so this uses every non-ground,
+  non-noise return.
+* **A height but no storeys:** storeys are estimated from the wall height,
+  otherwise OSM2World draws the wall without any windows.
+* **Outlines that contain `building:part`s are never touched.** Under Simple
+  3D Buildings the parts *are* the building; giving the outline a height made
+  OSM2World build a second facade over them. Tempelhof airport is mapped
+  this way.
+
+Mapped tags are never overwritten, and everything added carries a `source:`
+tag. Buildings wider than 150 m (Tempelhof, 870 m) follow the terrain instead
+of sitting on one level, since their ground varies by ~10 m.
+
+### Orthophotos
+
+Berlin's true orthophotos are fetched from the WMS (the download feed only
+offers multi-GB JPEG2000 zips) as one 100 m tile per terrain chunk at 20 cm,
+plus a 0.5 m overview of the whole area. "True" means roofs sit on their
+footprints rather than leaning, so the same photo drapes the ground and colours
+every upward-facing building surface. The photo already contains the survey
+day's light, so it is toned down to albedo range rather than lit as bare
+colour; up close the surface-class textures add back grain the 20 cm pixels
+lack. Parked cars and tree shadows of the survey day are baked in.
+
+### Trees
+
+Each cadastre record has a genus, height, crown diameter and trunk girth. Not
+every record has all of them — crown diameter is often 0 — so missing values
+are estimated: height from girth with a saturating height–diameter curve, crown
+from height with a per-genus ratio (a plane tree spreads, a pear stays narrow).
+Trees are drawn as instanced trunks and lumpy crowns (cones for conifers),
+sized from those numbers and coloured by genus.
+
+### Ground
+
+Roads, paths, parks and water from OSM are not modelled — separate geometry
+over a 1 m terrain either floats or z-fights. They are rasterised into a 0.5 m
+RGBA mask instead, and the terrain shader blends tiling PBR textures by it.
+Every texture is sampled twice, at its true scale and a larger rotated one,
+mixed by noise, so the tiling does not show.
 
 ### Where you can go
 
-The first attempt tested movement against the mesh surface directly, comparing
-the height ahead with the height underfoot. That produced invisible walls all
-over open pavement, and measuring showed why: **19.4% of all cells** have a
-neighbour step above a walkable threshold. Only 8% of those are real walls. The
-rest are parked cars, kiosks, bollards, tree canopies and photogrammetric noise
-— because a surface model makes no distinction between the ground and the
-things standing on it.
+`nav.bin` is a 1 m grid: walkable means not inside a building footprint (from
+OSM), not a tree trunk, not water, and not too steep on the laser-scan terrain.
+OSM ways tagged `tunnel=building_passage` are cut back out of the footprints,
+so the archways into Berlin courtyards stay open. Driving uses the walkable
+mask eroded by 2 m.
 
-`pipeline/build_nav.py` separates the two with a grey-scale morphological
-opening. An opening erases any raised feature narrower than its structuring
-element and leaves wider ones untouched, so at a 21 m element cars and trees
-vanish while building blocks survive. What remains is terrain; what was removed
-is what blocks you.
-
-The resulting mask is cleaned up, flood filled, and reported:
-
-```
-walkable  751,606 cells, 28 regions, largest 93.5% (70.3 ha)
-drivable  571,317 cells, 315 regions, largest 91.3% (52.2 ha)
-```
-
-The same pipeline also picks where you start. "Nearest walkable cell" is a bad
-default — courtyards and lightwells are walkable but enclosed, so you can spawn
-boxed in behind a building with nowhere to go. The spawn is instead chosen as
-ground that is walkable but *not* drivable (which is what a pavement is), one
-to six metres from a street, in the largest connected region, and with seven
-metres of open sky around it. That last condition matters more than it sounds:
-photogrammetry drapes over tree canopies rather than seeing through them, so
-without it you start in a spot that is technically clear while the camera sits
-inside a tree. Only 27% of walkable ground passes it.
-
-Cars are tested against the walkable mask eroded by 2 m, since they need more
-room than a person. That erosion is also a trap: the spawn point is walkable but
-sits inside the margin, so getting into a car used to strand you in a single
-square metre. Changing mode now snaps to ground the new mode can actually use.
-
-### Walking on a continuous mesh
-
-There are no separate building volumes to collide with, so the pipeline
-rasterises the surface into a 1 m heightfield storing the **lowest** and
-**highest** point in each cell. That single structure does three jobs:
-
-* **ground** — what you stand on, sampled bilinearly so there is no stepping;
-* **collision** — a move is blocked when the surface ahead rises more than
-  0.7 m, which lets you climb kerbs and stairs but not walls;
-* **the minimap** — drawn straight from the heightfield, so it always agrees
-  with where you can actually go.
-
-Spawning needed one more trick. Aerial photogrammetry drapes over tree canopies
-rather than seeing through them, so "lowest point nearby" reliably lands you
-inside a tree. The spawn search instead scores candidates on how far the ground
-stays flat and unobstructed around them — which is exactly what distinguishes a
-street from a courtyard.
-
-### Two flips make a right
-
-OBJ texture coordinates use a bottom-left origin, and three's `TextureLoader`
-uploads with `flipY` set, which already accounts for that. Flipping V a second
-time in the pipeline left the geometry perfectly correct while every atlas
-patch sampled from its mirror — the city rendered as a coherent shape covered
-in incoherent photography. Worth knowing about if you ever wire up an OBJ
-atlas by hand: verify the *texture*, not just the vertices.
-
-### The character
-
-`character.js` builds the figure, bike and scooter from primitives and animates
-them by driving joint rotations — no skinned glTF, so the page still downloads
-no external assets. The walk cycle is keyed to **distance travelled** rather
-than to elapsed time, which is what keeps the feet planted instead of skating
-when speed changes.
+The spawn is a pavement beside a street, in the largest connected region, with
+open sky around it — or the spot pinned with `set_spawn.py`, which survives
+rebuilds as long as it is still walkable.
 
 ### Rendering
 
-The survey already baked sun, sky and shadow into the texture, so relighting it
-properly would double up. The photo is used almost as-is, with the
-reconstructed normal adding only a slight lift.
-
-Colour management is manual throughout: three re-encodes the framebuffer to
-sRGB on output but does not inject its tone mapping or colour conversion into
-raw `ShaderMaterial`s. So the shaders linearise their own inputs and apply ACES
-themselves — without that, everything comes out milky.
+Everything in the city uses three's standard PBR material, so buildings,
+terrain and trees share one sun, one set of shadows (a 4096² map that follows
+the player), fog and ACES tone mapping. The terrain and trees extend the
+standard material through `onBeforeCompile` rather than being raw shaders,
+which is what lets them receive shadows. At night the window layer glows.
 
 ---
 
 ## Known limitations
 
-* **Street level is softer than the air.** The survey photographs the city from
-  above, so facades and street canyons are the least-sampled part of the model.
-  Flyovers look photographic; eye level is noticeably blurrier. That one is the
-  data, not the renderer.
-* **Foliage is rough.** Photogrammetry cannot see through canopies, so trees
-  reconstruct as blobs and there is no ground beneath them — which is why the
-  spawn search scores openness instead of just picking the lowest point.
-* The covered area is only what has been downloaded — walk far enough and you
-  reach the edge.
+* **Facades are generic.** Ground and roofs come from real aerial photos, but
+  walls use OSM2World's CC0 library textures: a Gründerzeit block reads as
+  plaster with the right number of storeys, not as that particular facade.
+* **Baked-in moments on the ground.** The orthophoto shows the cars that were
+  parked and the shadows that fell on the survey day.
+* **Untagged buildings are guesses.** Where OSM has no height or levels,
+  OSM2World falls back to defaults, and the roof is flat unless `roof:shape`
+  says otherwise.
+* **The ground is flat-shaded at kerb scale.** The terrain is 1 m, so kerbs and
+  steps are painted, not modelled.
+* The covered area is only what was built — walk far enough and you reach the
+  edge.
 * Driving is arcade-simple: no suspension, no proper collision response.
 
 ## Attribution
 
-* **3D-Meshmodell Berlin**, Befliegung 2025 — Senatsverwaltung für Wirtschaft,
-  Energie und Betriebe / Business Location Center. Open Data.
-* LoD2 building models (optional pipeline) — Geoportal Berlin,
-  `dl-de/zero-2.0`.
-* OpenStreetMap contributors, ODbL (optional pipeline).
+* **Terrain:** Airborne Laserscanning (ALS) — Senatsverwaltung für
+  Stadtentwicklung, Bauen und Wohnen Berlin, `dl-de/zero-2.0`.
+* **Trees:** Baumbestand Berlin (Straßen- und Anlagenbäume), `dl-de/zero-2.0`.
+* **Orthophotos:** TrueDOP 2024 (DOP20RGBI) — Senatsverwaltung für
+  Stadtentwicklung, Bauen und Wohnen Berlin, `dl-de/zero-2.0`.
+* **Buildings, streets, green space, places:** © OpenStreetMap contributors,
+  ODbL. 3D models generated with OSM2World (LGPL); textures from its standard
+  style (CC0, ambientCG).
 
 ---
 
@@ -234,46 +281,25 @@ themselves — without that, everything comes out milky.
 everything into world metres and writes `web/public/data/pois.json`. The
 running game only ever reads that file, so playing puts no load on the API.
 
-```
-115 named streets (150 label positions)
-555 points of interest: culture 78, food 100, green 3,
-                        refresh 182, shop 159, transit 33
-```
-
-Street names are painted flat onto the road surface and turned to the local
+Street names are painted onto the road surface and turned to the local
 bearing; places get a billboard label on a stem. Both mount only within a
-radius of the camera, and label textures are cached by string — with roughly
-115 distinct street names in the covered area the cache converges almost
-immediately.
+radius of the camera, and label textures are cached by string.
 
-`P` toggles places, `L` street names, `1`–`6` the individual categories. The
-*refresh* category (benches, drinking fountains, toilets, shade) mirrors what
-the [Berliner Erfrischungskarte](https://erfrischungskarte.odis-berlin.de/)
+The *refresh* category (benches, drinking fountains, toilets, shade) mirrors
+what the [Berliner Erfrischungskarte](https://erfrischungskarte.odis-berlin.de/)
 surfaces. Re-run with `--refresh` to re-query Overpass.
 
 ## Performance
 
-Measured on the nine Kreuzberg tiles, all resident:
+Measured on the default area (739 buildings, 2,550 trees), Chrome on an Apple
+Silicon Mac:
 
 | | |
 |---|---|
-| frame rate | 70–500 fps depending on altitude |
-| draw calls | 49–81 |
-| triangles drawn | 1.0–2.1 M of 3.0 M (frustum culled) |
+| frame rate | 55–80 fps at street level, shadows on |
+| draw calls | ~150–250 |
+| triangles drawn | ~3.1–3.4 M, including the shadow pass |
+| download | ~18 MB (the photogrammetric mesh was 178 MB) |
 
-Rendering is not the constraint. **Loading is**: about 178 MB, dominated by
-geometry (86 MB) and the full-resolution atlases (76 MB).
-
-Where the remaining wins are, roughly in order of value:
-
-1. **Serve compressed.** The dev server sends everything uncompressed. Geometry
-   gzips 1.35x and the nav grid 16x — worth switching on in production, and
-   free.
-2. **Compress geometry properly.** 10 bytes/vertex raw is already lean, but
-   Draco or meshopt typically manage 5–10x on this kind of mesh. This is the
-   single biggest lever.
-3. **Transcode the atlases.** JPEG has to be decoded and expanded to RGBA;
-   KTX2/Basis would cut both download and GPU memory several-fold. Needs
-   `toktx` or `basisu`, which are not installed here.
-4. **Drop the per-tile heightfields.** 5 MB that `nav.bin` now supersedes for
-   everything except a fallback path.
+Shadows are the most expensive single thing in the frame; `G` switches them
+off.

@@ -30,7 +30,7 @@ def main():
     ap.add_argument("--face", default=None, help="name of a place to look at")
     args = ap.parse_args()
 
-    mpath = os.path.join(OUT, "mesh_manifest.json")
+    mpath = os.path.join(OUT, "world.json")
     man = json.load(open(mpath))
     o = man["origin"]
 
