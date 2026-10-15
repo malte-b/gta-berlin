@@ -68,11 +68,9 @@ export class World {
   private readonly windowMats: THREE.MeshStandardMaterial[] = [];
   private loaded = { buildings: 0, chunks: 0 };
 
-  /** The open-data scene - terrain, OSM2World buildings, cadastre trees -
-   *  kept in one group so it can be swapped for the photogrammetric mesh. */
+  /** Buildings, trees and street furniture. */
   readonly open = new THREE.Group();
-  /** The draped terrain on its own, so the mesh view can use it as an
-   *  underlay that shows through holes in the cleaned mesh. */
+  /** The orthophoto-draped terrain. */
   readonly ground = new THREE.Group();
 
   constructor(scene: THREE.Scene) {

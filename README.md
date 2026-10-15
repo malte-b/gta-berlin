@@ -27,9 +27,7 @@ npm run typecheck
 The client is TypeScript on three.js. The built open-data world (~32 MB) is
 committed under `web/public/data/` so that Vercel can serve it, since the
 pipeline can't run there. After changing the area or the pipeline, rebuild it
-with the steps below and commit the result. The photogrammetric mesh is
-git-ignored and must not be published: it is finer than 20 cm at ground
-level, which privacy law forbids.
+with the steps below and commit the result.
 
 ---
 
@@ -44,7 +42,7 @@ level, which privacy law forbids.
 | `/` | search for an address, Enter to travel there |
 | `C` | camera: third person · close · first person |
 | `N` | day / night |
-| `G` | shadows on / off · `O` photogrammetric mesh ↔ open-data view · `K` original ↔ cleaned mesh |
+| `G` | shadows on / off |
 | `T` | labels · `M` minimap zoom · `X` respawn |
 | link | copies a URL pointing at exactly where you are standing |
 
@@ -86,46 +84,6 @@ All of it is engine-neutral — a glTF and documented binary grids — so the sa
 build can feed another client (a Godot port is planned).
 
 ---
-
-### Optional: the photogrammetric mesh (not open data)
-
-For a photographic look, the game can also draw the **3D-Meshmodell Berlin**
-(aerial survey 2025, Berlin Partner für Wirtschaft und Technologie). Download
-tile folders from the [Berlin 3D download portal](https://www.businesslocationcenter.de/berlin3d-downloadportal/)
-into `data/`, then:
-
-```bash
-python3 pipeline/build_mesh.py
-```
-
-Optionally clean it against the open reference data:
-
-```bash
-python3 pipeline/clean_mesh.py
-```
-
-This presses street clutter (parked cars, bumps, noise within 2 m of the
-ground, outside buildings) flat onto the laser-scan terrain, and removes thin
-ghosts - cranes, floating fragments - standing where the laser scan saw nothing
-that high. Wide structures are kept, so buildings finished after the scan
-survive. The untouched tiles stay as `m_*.raw.bin` and are what the game
-shows by default; `K` switches to the cleaned mesh. Removing a crane also
-removes the bit of photographed skin it was fused to, so under the cleaned
-mesh the orthophoto-draped laser terrain is drawn 15 cm lower, where it is
-hidden by the flattened ground and shows only through those holes.
-
-When `mesh_manifest.json` exists the game starts in the mesh view; `O` swaps
-to the open-data scene. The mesh is only drawn: walking, driving and ground
-height still come from the ALS terrain and the OSM navigation grid, which agree
-with the mesh surface to about ±10 cm on open streets (median 0.00 m) but know
-a pavement from a parked car or a tree canopy.
-
-**Licence:** the mesh is *not* open data (daten.berlin.de lists it as
-"other-closed"). Its [terms](https://www.businesslocationcenter.de/berlin3d-downloadportal/resources/terms/terms.de.html)
-allow non-commercial use only (2.4.1), forbid passing the data on (2.4.2) and
-require written consent from Berlin Partner before publishing renderings,
-stills or visualisations (2.4.4). That is why `web/public/data/` is
-git-ignored: keep mesh builds local unless you have that consent.
 
 ## How it works
 
@@ -302,7 +260,7 @@ Silicon Mac:
 | frame rate | 55–80 fps at street level, shadows on |
 | draw calls | ~150–250 |
 | triangles drawn | ~3.1–3.4 M, including the shadow pass |
-| download | ~18 MB (the photogrammetric mesh was 178 MB) |
+| download | ~18 MB |
 
 Shadows are the most expensive single thing in the frame; `G` switches them
 off.

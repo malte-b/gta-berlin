@@ -2,7 +2,6 @@ import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
 import { World } from './world';
-import { MeshLayer } from './meshlayer';
 import { Player } from './player';
 import { HUD } from './hud';
 import { Locator } from './locate';
@@ -134,46 +133,11 @@ if (!locator.applyHash()) {
     player.heading = world.spawnPoint.heading;
   }
 }
-// The photogrammetric mesh, if it has been built locally. It is the default
-// view when present; O swaps to the open-data scene. Both share the same
-// ground and navigation underneath, so switching never moves the player.
-const mesh = await MeshLayer.load(renderer);
-const credits = document.getElementById('credits')!;
-const OPEN_CREDITS = credits.innerHTML;
-let view: 'mesh' | 'open' = mesh ? 'mesh' : 'open';
 let shadowsWanted = true;
-function applyView(): void {
-  const m = view === 'mesh' && mesh !== null;
-  if (mesh) mesh.group.visible = m;
-  world.open.visible = !m;
-  // Under the cleaned mesh the draped terrain sits just below its flattened
-  // ground and only shows through the holes left where cranes were cut out.
-  // Under the original mesh it would poke through every dip, so it is off.
-  world.ground.visible = !m || (mesh !== null && !mesh.raw);
-  world.ground.position.y = m ? -0.15 : 0;
-  // nothing in the mesh receives shadows - its photos have them baked in
-  sun.castShadow = shadowsWanted && !m;
-  credits.innerHTML = m
-    ? '© Berlin Partner für Wirtschaft und Technologie GmbH – 3D-Meshmodell Berlin'
-      + ' · non-commercial use only'
-    : OPEN_CREDITS;
+function applyShadows(): void {
+  sun.castShadow = shadowsWanted;
 }
-if (mesh) {
-  scene.add(mesh.group);
-  // wait for the tile underfoot before letting the player in
-  await new Promise<void>((resolve) => {
-    const t0 = performance.now();
-    const tick = () => {
-      mesh.update(player.pos.x, player.pos.z);
-      const s = mesh.stats;
-      say(`streaming mesh — ${s.ready} of ${s.total} tiles`, 0.6 + 0.4 * (s.ready / s.total));
-      if (s.ready >= 1 || performance.now() - t0 > 40000) resolve();
-      else requestAnimationFrame(tick);
-    };
-    tick();
-  });
-}
-applyView();
+applyShadows();
 
 say('ready', 1);
 playBtn.disabled = false;
@@ -256,28 +220,8 @@ addEventListener('keydown', (e) => {
     case 'KeyG': {
       // shadows are the single most expensive thing in the frame
       shadowsWanted = !shadowsWanted;
-      applyView();
+      applyShadows();
       hud.hint(shadowsWanted ? 'shadows on' : 'shadows off');
-      break;
-    }
-    case 'KeyK': {
-      if (!mesh) break;
-      void mesh.setRaw(!mesh.raw).then((ok) => {
-        applyView();
-        hud.hint(!ok
-          ? 'no cleaned mesh - run pipeline/clean_mesh.py'
-          : mesh.raw ? 'mesh: original' : 'mesh: cleaned (flat ground, no cranes, holes filled from the orthophoto)');
-      });
-      break;
-    }
-    case 'KeyO': {
-      if (!mesh) {
-        hud.hint('no mesh built - see pipeline/build_mesh.py');
-        break;
-      }
-      view = view === 'mesh' ? 'open' : 'mesh';
-      applyView();
-      hud.hint(view === 'mesh' ? 'photogrammetric mesh' : 'open data: OSM2World + ALS + Baumkataster');
       break;
     }
     default:
@@ -487,11 +431,6 @@ function frame(now: number): void {
   sky.material.uniforms.sunDir.value.copy(sunDir);
 
   world.setEnv({ night: nightMix, time: acc });
-  if (mesh && view === 'mesh') {
-    mesh.update(player.pos.x, player.pos.z);
-    mesh.setEnv({ near, far, color: fogColor, night: nightMix,
-                  exposure: 1.35 - nightMix * 0.5 });
-  }
 
   // sun and sky light fade together; the shadow box re-centres on the
   // player in whole texels, so shadow edges do not shimmer as you move
@@ -518,4 +457,4 @@ requestAnimationFrame(frame);
 
 // expose for quick console poking during development
 (window as unknown as { __berlin: object }).__berlin =
-  { world, mesh, player, camera, renderer, scene, hud, locator, pois };
+  { world, player, camera, renderer, scene, hud, locator, pois };
