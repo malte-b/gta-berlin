@@ -39,6 +39,7 @@ export class HUD {
   constructor(world: World) {
     this.world = world;
     this.fromWorld = makeFromWorld(world.origin);
+    if (world.tiled) this.area = 'Berlin';
     this.updateLabel();
   }
 
@@ -71,13 +72,22 @@ export class HUD {
     ctx.fillStyle = '#15181e';
     ctx.fillRect(0, 0, size, size);
 
-    const map = this.world.map;
-    const nav = this.world.nav;
-    if (map) {
-      ctx.imageSmoothingEnabled = scale < 1;
-      ctx.drawImage(map,
+    ctx.imageSmoothingEnabled = scale < 1;
+    const reach = this.spans[this.zoom];
+    for (const tile of this.world.tiles.values()) {
+      const nav = tile.nav;
+      if (!tile.map || !nav || tile.distance(px, pz) > reach) continue;
+      ctx.drawImage(tile.map,
         size / 2 + (nav.minX - px) * scale, size / 2 + (nav.minZ - pz) * scale,
         nav.nx * nav.cell * scale, nav.nz * nav.cell * scale);
+    }
+
+    // data layer points, in their colours
+    if (this.pois) {
+      for (const [layer, x, z] of this.pois.dataNear(px, pz, reach / 2)) {
+        ctx.fillStyle = layer.colour;
+        ctx.fillRect(size / 2 + (x - px) * scale - 2.5, size / 2 + (z - pz) * scale - 2.5, 5, 5);
+      }
     }
 
     ctx.translate(size / 2, size / 2);
@@ -109,6 +119,7 @@ export class HUD {
       `<b>${fps.toFixed(0)}</b> fps · <b>${info.calls}</b> draws · `
       + `<b>${(info.triangles / 1e6).toFixed(2)}</b> M tris`
       + `<br><b>${s.buildings}</b> buildings · <b>${s.trees}</b> trees`
+      + (this.world.tiled ? ` · <b>${s.full}</b>/<b>${s.tiles}</b> tiles` : '')
       + `<br>x <b>${px.toFixed(0)}</b>  z <b>${pz.toFixed(0)}</b>  alt <b>${player.pos.y.toFixed(1)}</b> m`
       + `<br>${mode}`;
 

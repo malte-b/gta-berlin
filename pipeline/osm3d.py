@@ -82,8 +82,11 @@ def load_osm(bbox_ll, cache_dir, refresh=False):
     member ways and nodes OSM2World needs, as OSM XML. Returns the path."""
     os.makedirs(cache_dir, exist_ok=True)
     path = os.path.join(cache_dir, "buildings_%.5f_%.5f_%.5f_%.5f.osm" % bbox_ll)
-    if not refresh and os.path.exists(path) and os.path.getsize(path) > 1000:
-        return path
+    if not refresh and os.path.exists(path):
+        # an Overpass error is an HTML page; a forest tile is a short OSM file
+        with open(path, "rb") as fh:
+            if b"<osm" in fh.read(400):
+                return path
     bb = "%.6f,%.6f,%.6f,%.6f" % bbox_ll
     q = """[out:xml][timeout:300];
 (
@@ -898,6 +901,9 @@ def complete_3d_tags(osm_path, out_path, nodes, ways, rels, ground, top, grid):
                 add["building:levels"] = str(max(1, round(wall / LEVEL_HEIGHT)))
                 add["source:building:levels"] = "estimated by gta-berlin"
                 counts["levels"] += 1
+        # never override what is mapped: a fitted roof brings its own
+        # orientation and height, which OSM may already have without a shape
+        add = {k: v for k, v in add.items() if k not in tags}
         if add:
             adds[key] = add
 

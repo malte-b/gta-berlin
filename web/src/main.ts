@@ -6,6 +6,7 @@ import { Player } from './player';
 import { HUD } from './hud';
 import { Locator } from './locate';
 import { PoiLayer } from './pois';
+import { LayerPanel } from './layerpanel';
 import { skyMaterial } from './materials';
 import { makeBike, makeHuman, makeScooter, poseCycle, poseDrive,
          poseIdle, poseJump, poseScoot, poseWalk } from './character';
@@ -98,7 +99,7 @@ await world.init((m) => say(m, 0.5), renderer);
 if (world.manifest.environment) {
   say('sky lighting', 0.55);
   try {
-    const hdr = await new RGBELoader().loadAsync('data/' + world.manifest.environment.file);
+    const hdr = await new RGBELoader().loadAsync(world.envUrl(world.manifest.environment.file));
     hdr.mapping = THREE.EquirectangularReflectionMapping;
     const pmrem = new THREE.PMREMGenerator(renderer);
     scene.environment = pmrem.fromEquirectangular(hdr).texture;
@@ -114,8 +115,11 @@ if (world.manifest.environment) {
 const player = new Player(world);
 const hud = new HUD(world);
 const locator = new Locator(world, player, hud);
-const pois = await new PoiLayer(scene, world).load();
+const pois = new PoiLayer(scene, world);
 hud.pois = pois;
+world.onFull = (tile) => { if (tile.poiFile) void pois.add(tile.key, tile.poiFile); };
+world.onDropFull = (tile) => pois.remove(tile.key);
+const layerPanel = await new LayerPanel(pois, world, hud).load();
 
 // Spawn on the pavement picked by the navigation pipeline, not the geometric
 // centre - the middle of the area is just as likely to be an enclosed
@@ -125,7 +129,8 @@ const sz = world.spawnPoint.z;
 player.pos.set(sx, 0, sz);
 player.yaw = Math.PI * 0.25;
 
-if (!locator.applyHash()) {
+if (!await locator.applyHash((m) => say(m, 0.7))) {
+  await world.ensure(sx, sz, (m) => say(m, 0.7));
   player.spawn(sx, sz);
   // a pinned spawn can also carry the direction to look in
   if (world.spawnPoint.heading !== undefined) {
@@ -208,14 +213,19 @@ addEventListener('keydown', (e) => {
     case 'KeyM':
       hud.cycleZoom();
       break;
+    case 'KeyL':
+      hud.hint(layerPanel.toggle() ? 'data layers shown' : 'data layers hidden');
+      break;
     case 'KeyX':
-      player.setMode('foot');
-      player.spawn(sx, sz);
-      if (world.spawnPoint.heading !== undefined) {
-        player.yaw = world.spawnPoint.heading;
-        player.heading = world.spawnPoint.heading;
-      }
-      hud.hint('back at the start');
+      void world.ensure(sx, sz).then(() => {
+        player.setMode('foot');
+        player.spawn(sx, sz);
+        if (world.spawnPoint.heading !== undefined) {
+          player.yaw = world.spawnPoint.heading;
+          player.heading = world.spawnPoint.heading;
+        }
+        hud.hint('back at the start');
+      });
       break;
     case 'KeyG': {
       // shadows are the single most expensive thing in the frame
@@ -361,6 +371,7 @@ function frame(now: number): void {
   fps += ((1 / Math.max(dt, 1e-4)) - fps) * 0.08;
   acc += dt;
 
+  world.update(player.pos.x, player.pos.z);
   const wasFlying = player.flying;
   player.update(dt, keys);
   if (player.flying !== wasFlying) {
@@ -420,8 +431,9 @@ function frame(now: number): void {
   // crisp while street level keeps its depth.
   const agl = Math.max(0, player.pos.y - world.height(player.pos.x, player.pos.z));
   const lift = 1 + Math.min(agl, 900) / 90;
-  const near = 260 * lift;
-  const far = (player.inCar ? 1300 : 1100) * lift;
+  // ... but never past the edge of what has been loaded
+  const far = Math.min((player.inCar ? 1300 : 1100) * lift, world.viewLimit);
+  const near = Math.min(260 * lift, far * 0.5);
   fog.color.copy(fogColor);
   fog.near = near;
   fog.far = far;

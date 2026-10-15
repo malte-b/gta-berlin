@@ -66,8 +66,13 @@ def load(bbox_ll, cache_dir, refresh=False):
     """bbox_ll = (south, west, north, east). Cached raw Overpass JSON."""
     os.makedirs(cache_dir, exist_ok=True)
     path = os.path.join(cache_dir, "ground_%.5f_%.5f_%.5f_%.5f.json" % bbox_ll)
-    if not refresh and os.path.exists(path) and os.path.getsize(path) > 1000:
-        return json.load(open(path))
+    if not refresh and os.path.exists(path):
+        try:
+            obj = json.load(open(path))
+            if "elements" in obj:
+                return obj
+        except ValueError:
+            pass
     bb = "%.6f,%.6f,%.6f,%.6f" % bbox_ll
     obj = json.loads(fetch.get(OVERPASS, timeout=400, retries=2, post=_query(bb)))
     with open(path, "w") as fh:

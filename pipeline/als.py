@@ -24,6 +24,7 @@ import math
 import os
 import struct
 import subprocess
+import time
 import zipfile
 import zlib
 
@@ -141,7 +142,10 @@ def _member_stream(entry):
     nlen, xlen = struct.unpack_from("<HH", lh, 26)
     start = off + 30 + nlen + xlen
     end = start + entry["csize"] - 1
+    # The server now and then stops sending on a long transfer without
+    # closing it; --speed-limit turns that silence into an error to retry.
     p = subprocess.Popen(["curl", "-sS", "--fail", "--max-time", "3600",
+                          "--speed-limit", "10000", "--speed-time", "60",
                           "-r", "%d-%d" % (start, end), url],
                          stdout=subprocess.PIPE)
     inflate = zlib.decompressobj(-15) if entry["method"] == 8 else None
@@ -243,9 +247,26 @@ def tile_grid(key, entry, cache_dir, kind="ground"):
     has no return of that kind. kind "ground" is the bare earth, "top" the
     highest surface above it (roofs, crowns). One streaming pass caches both."""
     path = _cache_path(cache_dir, kind, key)
-    if os.path.exists(path):
-        raw = open(path, "rb").read()
-        return list(struct.unpack("<%df" % (TILE * TILE), raw))
+    if not os.path.exists(path):
+        # parallel tile builds share neighbouring km tiles: stream each once
+        import fetch
+        with fetch.file_lock(path + ".lock"):
+            # a 250 MB download now and then drops its connection: try again
+            for attempt in range(4):
+                if os.path.exists(path):
+                    break
+                try:
+                    _stream_tile(key, entry, cache_dir)
+                except IOError as err:
+                    if attempt == 3:
+                        raise
+                    log("    ALS %s: %s, retrying" % (key, err))
+                    time.sleep(30 * (attempt + 1))
+    raw = open(path, "rb").read()
+    return list(struct.unpack("<%df" % (TILE * TILE), raw))
+
+
+def _stream_tile(key, entry, cache_dir):
     e0 = int(key.split("_")[0]) * TILE
     n0 = int(key.split("_")[1]) * TILE
     acc, cnt, top = _grids(_member_stream(entry), e0, n0)
@@ -259,7 +280,6 @@ def tile_grid(key, entry, cache_dir, kind="ground"):
         with open(out + ".part", "wb") as fh:
             fh.write(struct.pack("<%df" % len(g), *g))
         os.replace(out + ".part", out)
-    return grids[kind]
 
 
 def fill_holes(h, nx, nz):

@@ -32,7 +32,7 @@ export class Locator {
     this.fromWorld = makeFromWorld(world.origin);
   }
 
-  /** World metres for a lon/lat, or null if it falls outside the mesh. */
+  /** World metres for a lon/lat. */
   toWorld(lon: number, lat: number): XZ {
     const [e, n] = utm33(lon, lat);
     const x = e - this.world.origin.e;
@@ -41,7 +41,7 @@ export class Locator {
   }
 
   inCoverage(x: number, z: number): boolean {
-    return this.world.nav.contains(x, z);
+    return this.world.covers(x, z);
   }
 
   shareUrl(): string {
@@ -65,8 +65,9 @@ export class Locator {
     history.replaceState(null, '', `#${h}`);
   }
 
-  /** Apply a #lat,lon&h=..&m=.. hash if one is present. Returns true if used. */
-  applyHash(): boolean {
+  /** Apply a #lat,lon&h=..&m=.. hash if one is present, once the ground
+   *  there has loaded. Resolves true if it was used. */
+  async applyHash(onProgress?: (msg: string) => void): Promise<boolean> {
     const raw = location.hash.replace(/^#/, '');
     if (!raw) return false;
     const parts: Record<string, string> = Object.create(null);
@@ -82,6 +83,7 @@ export class Locator {
     if (!coords || coords.some(Number.isNaN)) return false;
     const [x, z] = this.toWorld(coords[1], coords[0]);
     if (!this.inCoverage(x, z)) return false;
+    await this.world.ensure(x, z, onProgress);
     const p = this.player;
     if (parts.m) p.setMode(parts.m);
     p.spawn(x, z);
@@ -97,7 +99,7 @@ export class Locator {
     if (this.busy) return null;
     this.busy = true;
     try {
-      // bias to Berlin and to the area actually covered by the mesh
+      // bias to Berlin, where the tiles are
       const url = 'https://nominatim.openstreetmap.org/search'
         + `?format=jsonv2&limit=5&countrycodes=de&q=${encodeURIComponent(query + ', Berlin')}`;
       const res = await fetch(url, { headers: { 'Accept-Language': 'de' } });
@@ -133,6 +135,7 @@ export class Locator {
     for (const hit of hits) {
       const [x, z] = this.toWorld(hit.lon, hit.lat);
       if (this.inCoverage(x, z)) {
+        await this.world.ensure(x, z);
         this.player.spawn(x, z);
         const short = hit.name.split(',').slice(0, 2).join(',');
         return `→ ${short}`;

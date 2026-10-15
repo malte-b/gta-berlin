@@ -122,10 +122,10 @@ GROUND_TEXTURES = {
 }
 
 
-def ground_textures(jar, size=1024):
-    """Copy colour and normal maps into web/public/data/ground/ at `size`."""
+def ground_textures(jar, out, size=1024):
+    """Copy colour and normal maps into <out>/ground/ at `size`."""
     src = os.path.join(os.path.dirname(jar), "textures", "cc0textures")
-    dst = os.path.join(OUT, "ground")
+    dst = os.path.join(out, "ground")
     os.makedirs(dst, exist_ok=True)
     for name, folder in GROUND_TEXTURES.items():
         for kind in ("Color", "Normal"):
@@ -153,14 +153,14 @@ SKY_HDRI = "kloofendal_overcast_puresky"
 SKY_URL = "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/%s_1k.hdr" % SKY_HDRI
 
 
-def sky_environment():
-    """Copy the sky HDRI into web/public/data/env/, downloading it once."""
+def sky_environment(out):
+    """Copy the sky HDRI into <out>/env/, downloading it once."""
     name = "%s_1k.hdr" % SKY_HDRI
     src = os.path.join(CACHE, "env", name)
     if not os.path.exists(src):
         os.makedirs(os.path.dirname(src), exist_ok=True)
         fetch.download(SKY_URL, src)
-    dst = os.path.join(OUT, "env", name)
+    dst = os.path.join(out, "env", name)
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     if not os.path.exists(dst):
         shutil.copy(src, dst)
@@ -187,56 +187,97 @@ def bfs_distance(sources, passable, nx, nz):
     return dist
 
 
-def main():
-    ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--area", nargs=4, type=int, metavar=("E0", "N0", "E1", "N1"),
-                    default=DEFAULT_AREA, help="EPSG:25833 box, metres")
-    ap.add_argument("--refresh", action="store_true",
-                    help="re-query OpenStreetMap and the tree cadastre")
-    ap.add_argument("--osm2world", help="path to OSM2World.jar")
-    ap.add_argument("--lod", type=int, default=2,
-                    help="OSM2World level of detail; 4 models every window "
-                         "and costs ~100x the triangles")
-    ap.add_argument("--texture-res", type=int, default=1024,
-                    help="largest building texture edge in px; OSM2World's CC0 "
-                         "textures are 2048, its own export default is 512")
-    ap.add_argument("--max-slope", type=float, default=0.55)
-    ap.add_argument("--car-clearance", type=int, default=2)
-    args = ap.parse_args()
+ATTRIBUTION = [
+    "Terrain: Airborne Laserscanning (ALS), Senatsverwaltung fuer "
+    "Stadtentwicklung, Bauen und Wohnen Berlin (dl-de/zero-2.0)",
+    "Trees: Baumbestand Berlin, Strassen- und Anlagenbaeume (dl-de/zero-2.0)",
+    "Street furniture: Strassenbefahrung 2014 and Oeffentliche Beleuchtung, "
+    "Senatsverwaltung fuer Stadtentwicklung, Bauen und Wohnen Berlin (dl-de/zero-2.0); "
+    "benches also (c) OpenStreetMap contributors (ODbL); 3D models by OSM2World",
+    "Sky lighting: Kloofendal Overcast, Greg Zaal / Poly Haven (CC0)",
+    "Orthophotos: TrueDOP 2024, Senatsverwaltung fuer Stadtentwicklung, "
+    "Bauen und Wohnen Berlin (dl-de/zero-2.0)",
+    "Buildings, streets, green space: (c) OpenStreetMap contributors (ODbL), "
+    "3D models by OSM2World",
+]
 
-    e0, n0, e1, n1 = args.area
+
+def ll_box(e0, n0, e1, n1):
+    """(south, west, north, east) around an EPSG:25833 box - the box the OSM
+    queries, and so their cache file names, are keyed by."""
+    lls = [utm33_inv(e, n) for e in (e0, e1) for n in (n0, n1)]
+    return (min(p[1] for p in lls), min(p[0] for p in lls),
+            max(p[1] for p in lls), max(p[0] for p in lls))
+
+
+def crop(vals, nx, c0, r0, w, h):
+    """The w x h window at (c0, r0) of a flat row-major grid nx wide."""
+    out = []
+    for r in range(r0, r0 + h):
+        out += vals[r * nx + c0:r * nx + c0 + w]
+    return out
+
+
+def shared_assets(args, out):
+    """OSM2World, the ground textures and the sky, copied into `out` once."""
+    java, jar = ensure_osm2world(args.osm2world)
+    ground = ground_textures(jar, out)
+    env = sky_environment(out)
+    return java, jar, ground, env
+
+
+def build(area, out, args, margin=0, log=log):
+    """Build one area into the folder `out`. Returns (manifest, nav layers).
+
+    With a margin, everything is worked out over the area grown by that many
+    metres - hole filling under buildings, the navigation clean-up, roof
+    heights of buildings straddling the edge - and only then cropped back,
+    so neighbouring tiles agree along their shared edge. Each building, tree
+    and piece of furniture belongs to the one tile its centre lies in. The
+    terrain keeps one extra column east and row south, the first of the
+    neighbouring tiles, so terrain meshes and height lookups meet without a gap.
+    """
+    e0, n0, e1, n1 = area
     x0, z0 = e0 - ORIGIN_E, -(n1 - ORIGIN_N)          # north-west corner
     sx, sz = e1 - e0, n1 - n0
-    lls = [utm33_inv(e, n) for e in (e0, e1) for n in (n0, n1)]
-    bbox_ll = (min(p[1] for p in lls), min(p[0] for p in lls),
-               max(p[1] for p in lls), max(p[0] for p in lls))
-    log("Area E %d..%d  N %d..%d  (%.1f x %.1f km)" % (e0, e1, n0, n1, sx / 1000, sz / 1000))
-    os.makedirs(OUT, exist_ok=True)
-    t_all = time.time()
+    # the working area, margin included
+    E0, N0, E1, N1 = e0 - margin, n0 - margin, e1 + margin, n1 + margin
+    X0, Z0 = E0 - ORIGIN_E, -(N1 - ORIGIN_N)
+    bbox_ll = ll_box(E0, N0, E1, N1)
+    os.makedirs(out, exist_ok=True)
+
+    def in_tile(x, z):
+        return x0 <= x < x0 + sx and z0 <= z < z0 + sz
+
+    def to_world(e, n_):
+        return e - ORIGIN_E, -(n_ - ORIGIN_N)
 
     # --- terrain: ALS ground returns ---------------------------------------
     log("Terrain from the airborne laser scan ...")
-    h, nx, nz, measured, raised = als.terrain(e0, n0, e1, n1, os.path.join(CACHE, "als"))
-    terr = Terrain([v - ORIGIN_H for v in h], nx, nz, x0, z0)
-    blob, hmin, hmax = terr.to_bytes()
-    with open(os.path.join(OUT, "terrain.bin"), "wb") as fh:
+    h, nx, nz, measured, raised = als.terrain(E0, N0, E1, N1, os.path.join(CACHE, "als"))
+    terr = Terrain([v - ORIGIN_H for v in h], nx, nz, X0, Z0)
+    if margin:
+        keep = Terrain(crop(terr.h, nx, margin, margin, sx + 1, sz + 1), sx + 1, sz + 1, x0, z0)
+    else:
+        keep = terr
+    blob, hmin, hmax = keep.to_bytes()
+    with open(os.path.join(out, "terrain.bin"), "wb") as fh:
         fh.write(blob)
     log("  %d x %d at 1 m, %.0f%% measured, %.1f .. %.1f m above sea level"
-        % (nx, nz, measured * 100, hmin + ORIGIN_H, hmax + ORIGIN_H))
+        % (keep.nx, keep.nz, measured * 100, hmin + ORIGIN_H, hmax + ORIGIN_H))
     log("  %d cells raised out of stairwells, ramps and light wells" % raised)
 
     # --- ground cover ------------------------------------------------------
     log("Ground cover from OpenStreetMap ...")
     gdata = groundcover.load(bbox_ll, os.path.join(CACHE, "osm"), args.refresh)
     cover, passages, counts, water = groundcover.build(
-        gdata, x0, z0, sx, sz, os.path.join(OUT, "cover.png"))
+        gdata, X0, Z0, nx, nz, os.path.join(out, "cover.png"))
     log("  %(road)d roads, %(path)d paths, %(green)d green areas, %(water)d water" % counts
         + "  -> cover.png %d x %d (%.0f KB)" % (cover["w"], cover["h"], cover["bytes"] / 1024))
 
     # --- orthophotos -------------------------------------------------------
     log("True orthophotos (20 cm) ...")
-    ortho_meta = ortho.build(e0, n0, e1, n1, x0, z0, OUT, os.path.join(CACHE, "dop"))
+    ortho_meta = ortho.build(e0, n0, e1, n1, x0, z0, out, os.path.join(CACHE, "dop"))
     log("  %d x %d tiles at %.1f m (%.1f MB) + %d px overview"
         % (ortho_meta["nx"], ortho_meta["nz"], ortho_meta["res"],
            ortho_meta["bytes"] / 1048576, ortho_meta["overview"]["w"]))
@@ -244,19 +285,14 @@ def main():
     # --- buildings ---------------------------------------------------------
     log("Buildings: OSM Simple 3D Buildings via OSM2World ...")
     java, jar = ensure_osm2world(args.osm2world)
-    ground_tex = ground_textures(jar)
-    log("  ground materials from OSM2World's CC0 library: %s"
-        % ", ".join(ground_tex))
-    env = sky_environment()
-    log("  sky lighting: %s" % env["source"])
     osm_path = osm3d.load_osm(bbox_ll, os.path.join(CACHE, "osm"), args.refresh)
     nodes, ways, rels = osm3d.parse_osm(osm_path)
     log("  %d ways, %d relations" % (len(ways), len(rels)))
     # heights OSM lacks, measured from the laser scan's roof returns
-    top = als.roofs(e0, n0, e1, n1, os.path.join(CACHE, "als"))
+    top = als.roofs(E0, N0, E1, N1, os.path.join(CACHE, "als"))
     patched = os.path.splitext(osm_path)[0] + "_als.osm"
     counts, with_parts = osm3d.complete_3d_tags(
-        osm_path, patched, nodes, ways, rels, h, top, (x0, z0, nx, nz))
+        osm_path, patched, nodes, ways, rels, h, top, (X0, Z0, nx, nz))
     log("  roofs fitted to the laser scan: %s" % ", ".join(
         "%d %s" % (v, k) for k, v in sorted(counts["roofs"].items(), key=lambda kv: -kv[1])))
     log("  %d buildings split by measured height into %d parts"
@@ -265,12 +301,10 @@ def main():
         % (counts["heights"], counts["levels"], with_parts))
     glb = os.path.splitext(patched)[0] + "_textured_lod%d_tex%d.glb" % (args.lod, args.texture_res)
     t0 = time.time()
-    osm3d.run_osm2world(patched, glb, java, jar, args.lod, texture_res=args.texture_res)
-    objects, origin = osm3d.read_glb(glb)
-    log("  OSM2World: %d objects (%.0fs)" % (len(objects), time.time() - t0))
-    to_utm, fit = osm3d.fit_projection(objects, origin, nodes)
-    log("  reprojection fitted on %(pairs)d of %(of)d footprint vertices, "
-        "residual median %(median).3f m, p99 %(p99).3f m" % fit)
+    if ways:
+        osm3d.run_osm2world(patched, glb, java, jar, args.lod, texture_res=args.texture_res)
+        objects, origin = osm3d.read_glb(glb)
+        log("  OSM2World: %d objects (%.0fs)" % (len(objects), time.time() - t0))
 
     ncx = int(math.ceil(sx / CHUNK))
     ncz = int(math.ceil(sz / CHUNK))
@@ -279,9 +313,19 @@ def main():
         c, r = int((x - x0) // CHUNK), int((z - z0) // CHUNK)
         return (c, r) if 0 <= c < ncx and 0 <= r < ncz else None
 
-    bst = osm3d.relocate(
-        glb, os.path.join(OUT, "buildings.glb"), to_utm, terr.height, chunk_of,
-        lambda x, z: x0 <= x < x0 + sx and z0 <= z < z0 + sz)
+    bst = None
+    if ways:
+        to_utm, fit = osm3d.fit_projection(objects, origin, nodes)
+        log("  reprojection fitted on %(pairs)d of %(of)d footprint vertices, "
+            "residual median %(median).3f m, p99 %(p99).3f m" % fit)
+        bst = osm3d.relocate(
+            glb, os.path.join(out, "buildings.glb"), to_utm, terr.height, chunk_of, in_tile)
+    if not bst or not bst["buildings"]:
+        # forest, lake or field: no buildings to draw
+        if os.path.exists(os.path.join(out, "buildings.glb")):
+            os.remove(os.path.join(out, "buildings.glb"))
+        bst = {"buildings": 0, "triangles": 0, "tallest": 0.0, "bytes": 0,
+               "chunks": {}, "tinted": 0, "dropped": 0, "sunk": [], "draped": []}
     log("  %d buildings, %s triangles, tallest %.0f m -> buildings.glb (%.1f MB)"
         % (bst["buildings"], f"{bst['triangles']:,}", bst["tallest"],
            bst["bytes"] / 1048576))
@@ -297,7 +341,7 @@ def main():
 
     # --- trees -------------------------------------------------------------
     n = nx * nz
-    solid = Grid(x0, z0, 1.0, nx, nz)          # building outlines, reused for nav
+    solid = Grid(X0, Z0, 1.0, nx, nz)          # building outlines, reused for nav
     shapes = osm3d.footprints(nodes, ways, rels)
     for rings in shapes:
         solid.polygon(rings, 1)
@@ -305,20 +349,17 @@ def main():
     log("Trees from the Baumkataster ...")
     feats = trees_mod.load(e0, n0, e1, n1, os.path.join(CACHE, "trees"), args.refresh)
     tmeta, tree_list = trees_mod.build(
-        feats, lambda e, n_: (e - ORIGIN_E, -(n_ - ORIGIN_N)), terr.height,
-        lambda x, z: x0 <= x < x0 + sx and z0 <= z < z0 + sz,
-        os.path.join(OUT, "trees.bin"))
+        feats, to_world, terr.height, in_tile, os.path.join(out, "trees.bin"))
     log("  %d trees (%d with a size estimated from girth or genus)"
         % (tmeta["count"], tmeta["estimated"]))
 
     # --- street furniture ----------------------------------------------------
     log("Street furniture from the Strassenbefahrung 2014 ...")
-    fdata = street_furniture.load(e0, n0, e1, n1, os.path.join(CACHE, "furniture"),
-                                  args.refresh)
+    fcache = os.path.join(CACHE, "furniture")
+    fdata = street_furniture.load(e0, n0, e1, n1, fcache, args.refresh)
     pmeta, pcounts, pmissing, pskipped = street_furniture.build(
-        fdata, gdata, java, jar, os.path.join(CACHE, "furniture"),
-        lambda e, n_: (e - ORIGIN_E, -(n_ - ORIGIN_N)), terr.height,
-        lambda x, z: x0 <= x < x0 + sx and z0 <= z < z0 + sz, OUT)
+        fdata, gdata, java, jar, os.path.join(fcache, "work_%d_%d_%d_%d" % area),
+        to_world, terr.height, in_tile, out)
     log("  %d objects: %s -> props.glb (%.1f MB), %d models"
         % (pmeta["count"], ", ".join("%d %s" % (v, k) for k, v in
                                      sorted(pcounts.items(), key=lambda kv: -kv[1])),
@@ -334,16 +375,16 @@ def main():
     for pts in passages:
         solid.polyline(pts, 1.4, 0)
     trunk = bytearray(n)
-    canopy = Grid(x0, z0, 1.0, nx, nz)
+    canopy = Grid(X0, Z0, 1.0, nx, nz)
     for tx, tz, _th, crown, _d in tree_list:
-        c, r = int(tx - x0), int(tz - z0)
+        c, r = int(tx - X0), int(tz - Z0)
         if 0 <= c < nx and 0 <= r < nz:
             trunk[r * nx + c] = 1
         canopy.disc(tx, tz, crown * 0.5, 1)
     log("  %d building outlines, %d passages cut through them"
         % (len(shapes), len(passages)))
 
-    wet = [water.get(x0 + (k % nx) + 0.5, z0 + (k // nx) + 0.5) > 127 for k in range(n)]
+    wet = [water.get(X0 + (k % nx) + 0.5, Z0 + (k // nx) + 0.5) > 127 for k in range(n)]
     hgt = terr.h
     steep = [False] * n
     for r in range(nz):
@@ -363,11 +404,11 @@ def main():
     walk = ng._mask_filter(walk, nx, nz, 1, False)
     walk = [walk[k] and not blocked[k] for k in range(n)]
     seen, comps = ng.components(walk, nx, nz)
-    keep = {cid for cells, cid in comps if cells >= 400} | ({comps[0][1]} if comps else set())
-    walk = [walk[k] and seen[k] in keep for k in range(n)]
+    keep_ids = {cid for cells, cid in comps if cells >= 400} | ({comps[0][1]} if comps else set())
+    walk = [walk[k] and seen[k] in keep_ids for k in range(n)]
     nwalk = sum(walk)
     log("  walkable %.1f%% of the area, %d regions kept, largest %.1f%%"
-        % (100 * nwalk / n, len(keep), 100 * comps[0][0] / max(nwalk, 1) if comps else 0))
+        % (100 * nwalk / n, len(keep_ids), 100 * comps[0][0] / max(nwalk, 1) if comps else 0))
     drive = ng._mask_filter(walk, nx, nz, args.car_clearance, False)
     log("  drivable %.1f%% of walkable" % (100 * sum(drive) / max(nwalk, 1)))
 
@@ -378,16 +419,55 @@ def main():
         flags[k] = ((ng.WALKABLE if walk[k] else 0) | (ng.DRIVABLE if drive[k] else 0)
                     | (ng.OPEN_SKY if sky_open[k] else 0) | (ng.SKY_RAW if sky_raw[k] else 0)
                     | (ng.BUILDING if solid.data[k] else 0))
-    nblob, nmeta = ng.to_bytes(x0, z0, 1.0, nx, nz, terr.h, flags)
-    with open(os.path.join(OUT, "nav.bin"), "wb") as fh:
+    hnav = terr.h
+    if margin:
+        def cut(v):
+            return crop(v, nx, margin, margin, sx, sz)
+        flags = bytearray(cut(list(flags)))
+        hnav, walk, drive, sky_open = cut(hnav), cut(walk), cut(drive), cut(sky_open)
+    nblob, nmeta = ng.to_bytes(x0, z0, 1.0, sx, sz, hnav, flags)
+    with open(os.path.join(out, "nav.bin"), "wb") as fh:
         fh.write(nblob)
 
-    # --- spawn -------------------------------------------------------------
-    # A pinned spawn (pipeline/set_spawn.py) survives a rebuild if it still
-    # lands on walkable ground; otherwise pick a pavement beside a street.
-    mpath = os.path.join(OUT, "world.json")
-    old = json.load(open(mpath)) if os.path.exists(mpath) else {}
-    spawn = old.get("spawn")
+    # --- manifest ----------------------------------------------------------
+    world = [x0, round(hmin, 1), z0, x0 + sx, round(hmax + bst["tallest"], 1), z0 + sz]
+    clon, clat = utm33_inv((e0 + e1) / 2, (n0 + n1) / 2)
+    manifest = {
+        "kind": "osm3d",
+        "origin": {"e": ORIGIN_E, "n": ORIGIN_N, "h": ORIGIN_H},
+        "area": {"e0": e0, "n0": n0, "e1": e1, "n1": n1},
+        "world": world,
+        "centre": {"x": x0 + sx / 2, "z": z0 + sz / 2,
+                   "lon": round(clon, 6), "lat": round(clat, 6)},
+        "terrain": {"file": "terrain.bin", "minX": x0, "minZ": z0, "cell": 1.0,
+                    "nx": keep.nx, "nz": keep.nz, "hmin": round(hmin, 2), "hmax": round(hmax, 2)},
+        "cover": cover,
+        "ortho": ortho_meta,
+        "groundTextures": {k: {"color": "ground/%s_color.jpg" % k,
+                               "normal": "ground/%s_normal.jpg" % k}
+                           for k in GROUND_TEXTURES},
+        "trees": tmeta,
+        "props": pmeta,
+        "nav": {"file": "nav.bin", "cell": 1.0, "nx": sx, "nz": sz,
+                "minX": x0, "minZ": z0, **nmeta},
+        "attribution": ATTRIBUTION,
+    }
+    if bst["buildings"]:
+        manifest["buildings"] = {
+            "file": "buildings.glb", "chunk": CHUNK, "chunks": bst["chunks"],
+            "count": bst["buildings"], "triangles": bst["triangles"], "bytes": bst["bytes"]}
+    nav = {"walk": walk, "drive": drive, "sky_open": sky_open,
+           "nx": sx, "nz": sz, "x0": x0, "z0": z0}
+    return manifest, nav
+
+
+def pick_spawn(nav, old):
+    """A pinned spawn (pipeline/set_spawn.py) survives a rebuild if it still
+    lands on walkable ground; otherwise pick a pavement beside a street."""
+    walk, drive, sky_open = nav["walk"], nav["drive"], nav["sky_open"]
+    nx, nz, x0, z0 = nav["nx"], nav["nz"], nav["x0"], nav["z0"]
+    n = nx * nz
+    spawn = old
     if spawn:
         c, r = int(spawn["x"] - x0), int(spawn["z"] - z0)
         if not (0 <= c < nx and 0 <= r < nz and walk[r * nx + c]):
@@ -412,48 +492,44 @@ def main():
     if spawn:
         log("  spawn at x %.0f z %.0f%s" % (spawn["x"], spawn["z"],
                                             " (pinned)" if "facing" in spawn else ""))
+    return spawn
 
-    # --- manifest ----------------------------------------------------------
-    ymin = hmin
-    ymax = hmax + bst["tallest"]
-    world = [x0, round(ymin, 1), z0, x0 + sx, round(ymax, 1), z0 + sz]
-    clon, clat = utm33_inv((e0 + e1) / 2, (n0 + n1) / 2)
-    manifest = {
-        "kind": "osm3d",
-        "origin": {"e": ORIGIN_E, "n": ORIGIN_N, "h": ORIGIN_H},
-        "area": {"e0": e0, "n0": n0, "e1": e1, "n1": n1},
-        "world": world,
-        "centre": {"x": x0 + sx / 2, "z": z0 + sz / 2,
-                   "lon": round(clon, 6), "lat": round(clat, 6)},
-        "terrain": {"file": "terrain.bin", "minX": x0, "minZ": z0, "cell": 1.0,
-                    "nx": nx, "nz": nz, "hmin": round(hmin, 2), "hmax": round(hmax, 2)},
-        "cover": cover,
-        "ortho": ortho_meta,
-        "groundTextures": {k: {"color": "ground/%s_color.jpg" % k,
-                               "normal": "ground/%s_normal.jpg" % k}
-                           for k in GROUND_TEXTURES},
-        "buildings": {"file": "buildings.glb", "chunk": CHUNK,
-                      "chunks": bst["chunks"], "count": bst["buildings"],
-                      "triangles": bst["triangles"], "bytes": bst["bytes"]},
-        "trees": tmeta,
-        "props": pmeta,
-        "environment": env,
-        "nav": {"file": "nav.bin", "cell": 1.0, "nx": nx, "nz": nz,
-                "minX": x0, "minZ": z0, **nmeta},
-        "attribution": [
-            "Terrain: Airborne Laserscanning (ALS), Senatsverwaltung fuer "
-            "Stadtentwicklung, Bauen und Wohnen Berlin (dl-de/zero-2.0)",
-            "Trees: Baumbestand Berlin, Strassen- und Anlagenbaeume (dl-de/zero-2.0)",
-            "Street furniture: Strassenbefahrung 2014 and Oeffentliche Beleuchtung, "
-            "Senatsverwaltung fuer Stadtentwicklung, Bauen und Wohnen Berlin (dl-de/zero-2.0); "
-            "benches also (c) OpenStreetMap contributors (ODbL); 3D models by OSM2World",
-            "Sky lighting: Kloofendal Overcast, Greg Zaal / Poly Haven (CC0)",
-            "Orthophotos: TrueDOP 2024, Senatsverwaltung fuer Stadtentwicklung, "
-            "Bauen und Wohnen Berlin (dl-de/zero-2.0)",
-            "Buildings, streets, green space: (c) OpenStreetMap contributors (ODbL), "
-            "3D models by OSM2World",
-        ],
-    }
+
+def add_args(ap):
+    ap.add_argument("--refresh", action="store_true",
+                    help="re-query OpenStreetMap and the tree cadastre")
+    ap.add_argument("--osm2world", help="path to OSM2World.jar")
+    ap.add_argument("--lod", type=int, default=2,
+                    help="OSM2World level of detail; 4 models every window "
+                         "and costs ~100x the triangles")
+    ap.add_argument("--texture-res", type=int, default=1024,
+                    help="largest building texture edge in px; OSM2World's CC0 "
+                         "textures are 2048, its own export default is 512")
+    ap.add_argument("--max-slope", type=float, default=0.55)
+    ap.add_argument("--car-clearance", type=int, default=2)
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--area", nargs=4, type=int, metavar=("E0", "N0", "E1", "N1"),
+                    default=DEFAULT_AREA, help="EPSG:25833 box, metres")
+    add_args(ap)
+    args = ap.parse_args()
+
+    e0, n0, e1, n1 = args.area
+    log("Area E %d..%d  N %d..%d  (%.1f x %.1f km)"
+        % (e0, e1, n0, n1, (e1 - e0) / 1000, (n1 - n0) / 1000))
+    t_all = time.time()
+    _java, jar, ground_tex, env = shared_assets(args, OUT)
+    log("Shared: ground materials from OSM2World's CC0 library (%s), sky lighting %s"
+        % (", ".join(ground_tex), env["source"]))
+    manifest, nav = build(tuple(args.area), OUT, args)
+    manifest["environment"] = env
+
+    mpath = os.path.join(OUT, "world.json")
+    old = json.load(open(mpath)) if os.path.exists(mpath) else {}
+    spawn = pick_spawn(nav, old.get("spawn"))
     if spawn:
         manifest["spawn"] = spawn
     with open(mpath, "w") as fh:

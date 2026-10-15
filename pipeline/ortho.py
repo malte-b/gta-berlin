@@ -18,6 +18,7 @@ the area is fetched in pieces that match the game's terrain chunks:
 """
 import concurrent.futures as cf
 import os
+import time
 
 import fetch
 
@@ -32,11 +33,14 @@ def _getmap(e0, n0, e1, n1, w, h):
     url = ("%s?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=%s&STYLES="
            "&CRS=EPSG:25833&BBOX=%.2f,%.2f,%.2f,%.2f&WIDTH=%d&HEIGHT=%d"
            "&FORMAT=image/jpeg" % (WMS, LAYER, e0, n0, e1, n1, w, h))
-    data = fetch.get(url, timeout=300, retries=3)
-    if data[:2] != b"\xff\xd8":
-        # WMS errors come back as XML with a 200 status
-        raise fetch.FetchError("not a JPEG: %r" % data[:200])
-    return data
+    for attempt in range(5):
+        data = fetch.get(url, timeout=300, retries=3)
+        if data[:2] == b"\xff\xd8":
+            return data
+        # WMS errors come back as XML with a 200 status; under load the
+        # server refuses now and then and serves the same box moments later
+        time.sleep(10 * (attempt + 1))
+    raise fetch.FetchError("not a JPEG: %r" % data[-600:])
 
 
 def build(e0, n0, e1, n1, x0, z0, out_dir, cache_dir):
@@ -62,7 +66,7 @@ def build(e0, n0, e1, n1, x0, z0, out_dir, cache_dir):
             dst.write(src.read())
         return os.path.getsize(out)
 
-    with cf.ThreadPoolExecutor(max_workers=6) as ex:
+    with cf.ThreadPoolExecutor(max_workers=4) as ex:
         total = sum(ex.map(tile, [(i, j) for j in range(nj) for i in range(ni)]))
 
     ow = int(round((e1 - e0) / OVERVIEW_RES))

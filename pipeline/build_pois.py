@@ -114,22 +114,15 @@ def classify(tags):
     return None
 
 
-def main():
-    ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--refresh", action="store_true",
-                    help="re-query Overpass instead of using the cached response")
-    args = ap.parse_args()
-
-    manifest = json.load(open(os.path.join(OUT, "world.json")))
-    origin = manifest["origin"]
-    world = manifest["world"]
-
+def build(origin, world, cache_path, refresh=False, margin=40.0):
+    """Street labels and POIs inside world = [x0, y0, z0, x1, y1, z1], from
+    one Overpass query cached at cache_path. POIs up to `margin` metres
+    outside are kept; tiles pass 0 so a POI is never in two of them."""
     def to_world(lon, lat):
         e, n = utm33(lon, lat)
         return (e - origin["e"], -(n - origin["n"]))
 
-    def in_world(x, z, margin=40.0):
+    def in_world(x, z, margin=margin):
         return (world[0] - margin <= x <= world[3] + margin
                 and world[2] - margin <= z <= world[5] + margin)
 
@@ -141,9 +134,8 @@ def main():
     bbox = (min(lats), min(lons), max(lats), max(lons))
     log("Coverage bbox %.5f,%.5f .. %.5f,%.5f" % bbox)
 
-    os.makedirs(CACHE, exist_ok=True)
-    cache_path = os.path.join(CACHE, "pois_overpass.json")
-    if args.refresh or not os.path.exists(cache_path):
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    if refresh or not os.path.exists(cache_path):
         log("Querying Overpass once ...")
         raw = fetch.get(OVERPASS, timeout=300, retries=2, post=build_query(bbox))
         with open(cache_path, "wb") as fh:
@@ -264,12 +256,24 @@ def main():
     log("  %d points of interest: %s"
         % (len(pois), ", ".join("%s %d" % kv for kv in sorted(by_cat.items()))))
 
-    out = {
+    return {
         "streets": streets,
         "pois": pois,
         "categories": [c for c, _ in CATEGORIES],
         "attribution": "(c) OpenStreetMap contributors, ODbL",
     }
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--refresh", action="store_true",
+                    help="re-query Overpass instead of using the cached response")
+    args = ap.parse_args()
+
+    manifest = json.load(open(os.path.join(OUT, "world.json")))
+    out = build(manifest["origin"], manifest["world"],
+                os.path.join(CACHE, "pois_overpass.json"), args.refresh)
     path = os.path.join(OUT, "pois.json")
     with open(path, "w") as fh:
         json.dump(out, fh, separators=(",", ":"))

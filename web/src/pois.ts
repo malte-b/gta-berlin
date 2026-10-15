@@ -1,7 +1,6 @@
 import * as THREE from 'three';
+import type { PointLayer } from './layers';
 import type { World } from './world';
-
-const DATA = 'data/';
 
 /**
  * Street names and points of interest, read from a file baked at build time.
@@ -37,14 +36,24 @@ const CATEGORY_STYLE: Record<Category, { colour: string; dot: number; label: str
 const POI_RADIUS = 130;
 const STREET_RADIUS = 170;
 const MAX_POI_SPRITES = 70;
+// Data layers are looked for rather than stumbled upon: they reach further,
+// and stand taller, than the OSM places.
+const DATA_RADIUS = 320;
+const MAX_DATA_SPRITES = 45;
 
-function labelTexture(text: string, colour: string, scale = 1): Label {
+function labelTexture(text: string, colour: string, scale = 1, sub = ''): Label {
   const pad = 12;
   const font = `600 ${Math.round(30 * scale)}px ui-monospace, Menlo, monospace`;
+  const small = `400 ${Math.round(22 * scale)}px ui-monospace, Menlo, monospace`;
   const probe = document.createElement('canvas').getContext('2d')!;
   probe.font = font;
-  const w = Math.ceil(probe.measureText(text).width) + pad * 2;
-  const h = Math.round(46 * scale);
+  let tw = probe.measureText(text).width;
+  if (sub) {
+    probe.font = small;
+    tw = Math.max(tw, probe.measureText(sub).width);
+  }
+  const w = Math.ceil(tw) + pad * 2;
+  const h = Math.round((sub ? 76 : 46) * scale);
   const c = document.createElement('canvas');
   c.width = w;
   c.height = h;
@@ -62,7 +71,14 @@ function labelTexture(text: string, colour: string, scale = 1): Label {
   g.lineWidth = 1.5;
   g.stroke();
   g.fillStyle = colour;
-  g.fillText(text, pad, h / 2 + 1);
+  if (sub) {
+    g.fillText(text, pad, 25 * scale);
+    g.font = small;
+    g.fillStyle = 'rgba(232,230,225,.75)';
+    g.fillText(sub, pad, 55 * scale);
+  } else {
+    g.fillText(text, pad, h / 2 + 1);
+  }
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.minFilter = THREE.LinearFilter;
@@ -100,7 +116,7 @@ function streetTexture(text: string): Label {
 export class PoiLayer {
   readonly scene: THREE.Scene;
   readonly world: World;
-  data: PoiData | null = null;
+  private readonly sets = new Map<string, PoiData>();
   showPois = true;
   showStreets = true;
   readonly enabled = new Set<string>(Object.keys(CATEGORY_STYLE));
@@ -110,20 +126,47 @@ export class PoiLayer {
   private readonly streetCache = new Map<string, Label>();
   private readonly mounted = new Map<string, THREE.Object3D>();
   private readonly streetMounted = new Map<string, THREE.Mesh | null>();
+  /** Point layers from data/layers/ and uploads, by id, in display order. */
+  readonly layers = new Map<string, PointLayer>();
+  readonly dataGroup = new THREE.Group();
+  private readonly dataMounted = new Map<string, THREE.Object3D>();
 
   constructor(scene: THREE.Scene, world: World) {
     this.scene = scene;
     this.world = world;
-    scene.add(this.group, this.streetGroup);
+    scene.add(this.group, this.streetGroup, this.dataGroup);
   }
 
-  async load(): Promise<this> {
-    try {
-      this.data = await fetch(DATA + 'pois.json').then((r) => r.json()) as PoiData;
-    } catch {
-      this.data = { streets: [], pois: [] };
+  addLayer(layer: PointLayer): void {
+    this.layers.set(layer.id, layer);
+  }
+
+  removeLayer(id: string): void {
+    this.layers.delete(id);
+  }
+
+  /** Visible data points within r of (x, z), for the minimap. */
+  *dataNear(x: number, z: number, r: number): Generator<[PointLayer, number, number]> {
+    for (const l of this.layers.values()) {
+      if (!l.on) continue;
+      for (const p of l.points) {
+        if (Math.abs(p.x - x) < r && Math.abs(p.z - z) < r) yield [l, p.x, p.z];
+      }
     }
-    return this;
+  }
+
+  /** Labels for one tile; a single-area build has just one set. */
+  async add(key: string, url: string): Promise<void> {
+    try {
+      const data = await fetch(url).then((r) => r.json()) as PoiData;
+      this.sets.set(key, data);
+    } catch {
+      // a tile without labels is still a tile
+    }
+  }
+
+  remove(key: string): void {
+    this.sets.delete(key);
   }
 
   get categories() {
@@ -175,6 +218,68 @@ export class PoiLayer {
     stem.position.y = 0.75;
     g.add(stem);
     return g;
+  }
+
+  /** A data point: a tall pin in the layer's colour, its label above. */
+  private dataSprite(layer: PointLayer, n: string, d: string): THREE.Group {
+    const cacheKey = `data|${layer.colour}|${n}|${d}`;
+    let entry = this.texCache.get(cacheKey);
+    if (!entry) {
+      entry = labelTexture(n, layer.colour, 1, d);
+      this.texCache.set(cacheKey, entry);
+    }
+    const g = new THREE.Group();
+    const spr = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: entry.tex, depthTest: false, depthWrite: false,
+      transparent: true, sizeAttenuation: true,
+    }));
+    spr.renderOrder = 21;
+    const scale = 0.034;
+    spr.scale.set(entry.w * scale, entry.h * scale, 1);
+    spr.position.y = 5.2;
+    g.add(spr);
+    const colour = new THREE.Color(layer.colour);
+    const head = new THREE.Mesh(new THREE.OctahedronGeometry(0.42, 0),
+                                new THREE.MeshBasicMaterial({ color: colour }));
+    head.position.y = 3.6;
+    const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 3.4, 6),
+                                new THREE.MeshBasicMaterial({ color: colour, transparent: true, opacity: 0.6 }));
+    stem.position.y = 1.7;
+    g.add(head, stem);
+    return g;
+  }
+
+  private updateData(x: number, z: number): void {
+    const near: [number, PointLayer, { x: number; z: number; n: string; d: string }][] = [];
+    for (const l of this.layers.values()) {
+      if (!l.on) continue;
+      for (const p of l.points) {
+        const d = (p.x - x) ** 2 + (p.z - z) ** 2;
+        if (d < DATA_RADIUS * DATA_RADIUS) near.push([d, l, p]);
+      }
+    }
+    near.sort((a, b) => a[0] - b[0]);
+    const wanted = new Set<string>();
+    for (const [, l, p] of near.slice(0, MAX_DATA_SPRITES)) {
+      const key = `${l.id}|${p.x},${p.z},${p.n}`;
+      wanted.add(key);
+      if (this.dataMounted.has(key)) continue;
+      const obj = this.dataSprite(l, p.n, p.d);
+      obj.position.set(p.x, this.world.height(p.x, p.z), p.z);
+      this.dataMounted.set(key, obj);
+      this.dataGroup.add(obj);
+    }
+    for (const [key, obj] of [...this.dataMounted]) {
+      if (wanted.has(key)) continue;
+      this.dataGroup.remove(obj);
+      // the label texture stays cached; the pin's own parts go
+      obj.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.geometry) m.geometry.dispose();
+        if (m.material) (m.material as THREE.Material).dispose();
+      });
+      this.dataMounted.delete(key);
+    }
   }
 
   /**
@@ -271,13 +376,13 @@ export class PoiLayer {
 
   /** Mount what is near, unmount what is not. Called every frame; cheap. */
   update(x: number, z: number): void {
-    if (!this.data) return;
+    this.updateData(x, z);
     this.group.visible = this.showPois;
     this.streetGroup.visible = this.showStreets;
 
     if (this.showPois) {
       const near: [number, Poi][] = [];
-      for (const p of this.data.pois) {
+      for (const set of this.sets.values()) for (const p of set.pois) {
         if (!this.enabled.has(p.c)) continue;
         const d = (p.x - x) ** 2 + (p.z - z) ** 2;
         if (d < POI_RADIUS * POI_RADIUS) near.push([d, p]);
@@ -306,7 +411,7 @@ export class PoiLayer {
 
     if (this.showStreets) {
       const wanted = new Set<string>();
-      for (const st of this.data.streets) {
+      for (const set of this.sets.values()) for (const st of set.streets) {
         for (const spot of st.at) {
           const d = (spot.x - x) ** 2 + (spot.z - z) ** 2;
           if (d > STREET_RADIUS * STREET_RADIUS) continue;
@@ -335,7 +440,8 @@ export class PoiLayer {
   }
 
   get stats() {
-    return { pois: this.mounted.size, streets: this.streetMounted.size };
+    return { pois: this.mounted.size, streets: this.streetMounted.size,
+             data: this.dataMounted.size };
   }
 }
 

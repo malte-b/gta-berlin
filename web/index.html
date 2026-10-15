@@ -53,6 +53,23 @@
     border: 0; border-radius: 6px; padding: 11px 30px; font: inherit; font-size: 13px;
     font-weight: 600; letter-spacing: .1em; cursor: pointer; text-transform: uppercase; }
   #play[disabled] { opacity: .28; cursor: default; }
+  #layers { top: 116px; left: 12px; width: 230px; pointer-events: auto; }
+  #layers.closed #layerbody { display: none; }
+  #layers h3 { margin: 0; font-size: 10px; font-weight: 500; letter-spacing: .14em;
+    color: var(--dim); text-transform: uppercase; display: flex; justify-content: space-between; }
+  #layerlist { margin: 6px 0 4px; }
+  .layer { display: flex; align-items: center; gap: 7px; padding: 2px 0; cursor: pointer; }
+  .layer input { margin: 0; accent-color: var(--accent); cursor: pointer; }
+  .layer .swatch { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+  .layer .lname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .layer .count { color: var(--dim); }
+  .layer button { background: none; border: 0; color: var(--dim); font: inherit; cursor: pointer; padding: 0 2px; }
+  .layer button:hover { color: var(--ui); }
+  #layeradd { width: 100%; margin-top: 4px; background: rgba(255,255,255,.06); color: var(--dim);
+    border: 1px dashed rgba(255,255,255,.2); border-radius: 5px; font: inherit; font-size: 10.5px;
+    padding: 6px; cursor: pointer; }
+  #layeradd:hover, body.dragging #layeradd { color: var(--ui); border-color: var(--accent); }
+  #layernote { color: var(--dim); font-size: 9.5px; margin-top: 4px; line-height: 1.4; }
   #hint { position: fixed; left: 50%; bottom: 26%; transform: translateX(-50%); z-index: 5;
     font-size: 12px; letter-spacing: .06em; background: rgba(14,16,21,.8); padding: 8px 16px;
     border-radius: 6px; border: 1px solid rgba(255,255,255,.1); opacity: 0; transition: opacity .25s; }
@@ -71,8 +88,18 @@
     look up and walk forward to fly · fly into the ground to land<br>
     <kbd>1</kbd> foot · <kbd>2</kbd> bike · <kbd>3</kbd> scooter · <kbd>4</kbd> car<br>
     <kbd>H</kbd> fly · <kbd>C</kbd> camera · <kbd>N</kbd> night · <kbd>T</kbd> labels<br>
-    <kbd>G</kbd> shadows · <kbd>O</kbd> mesh / open data · <kbd>K</kbd> original / cleaned mesh · <kbd>M</kbd> map zoom · <kbd>X</kbd> respawn<br>
-    <kbd>/</kbd> search · <kbd>Esc</kbd> release mouse
+    <kbd>G</kbd> shadows · <kbd>M</kbd> map zoom · <kbd>X</kbd> respawn<br>
+    <kbd>L</kbd> data layers · <kbd>/</kbd> search · <kbd>Esc</kbd> release mouse
+  </div>
+  <div class="panel" id="layers">
+    <h3><span>Data layers</span><span><kbd>L</kbd></span></h3>
+    <div id="layerbody">
+      <div id="layerlist"></div>
+      <button id="layeradd">+ add GeoJSON or CSV (or drop a file)</button>
+      <input id="layerfile" type="file" accept=".geojson,.json,.csv,.tsv,.txt" multiple hidden>
+      <div id="layernote">Files are read in this browser and not uploaded anywhere.
+        Points need lat/lon or EPSG:25833.</div>
+    </div>
   </div>
   <div class="panel" id="speed">0<span> KM/H</span></div>
   <div class="panel" id="go">

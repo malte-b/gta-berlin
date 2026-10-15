@@ -1,0 +1,23 @@
+{
+ "_doc": "Point layers baked by pipeline/build_layers.py. Each is one WFS feature type (gdi.berlin.de) shown as labelled markers. label/detail: property names, the first non-empty one wins. Non-point features are placed at their centre.",
+ "layers": [
+  {
+   "id": "toiletten",
+   "name": "Public toilets",
+   "colour": "#4fd1c5",
+   "wfs": "https://gdi.berlin.de/services/wfs/toiletten",
+   "type": "toiletten:toiletten",
+   "label": ["standort"],
+   "detail": ["oeffnungszeiten"]
+  },
+  {
+   "id": "schulen",
+   "name": "Schools",
+   "colour": "#f6ad55",
+   "wfs": "https://gdi.berlin.de/services/wfs/schulen",
+   "type": "schulen:schulen",
+   "label": ["schulname"],
+   "detail": ["schulart"]
+  }
+ ]
+}

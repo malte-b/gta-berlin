@@ -43,7 +43,7 @@ with the steps below and commit the result.
 | `C` | camera: third person · close · first person |
 | `N` | day / night |
 | `G` | shadows on / off |
-| `T` | labels · `M` minimap zoom · `X` respawn |
+| `T` | labels · `L` data layers · `M` minimap zoom · `X` respawn |
 | link | copies a URL pointing at exactly where you are standing |
 
 ---
@@ -82,6 +82,69 @@ Output in `web/public/data/`:
 
 All of it is engine-neutral — a glTF and documented binary grids — so the same
 build can feed another client (a Godot port is planned).
+
+### All of Berlin
+
+```bash
+python3 pipeline/build_berlin.py --radius 3      # everything within 3 km of the spawn
+python3 pipeline/build_berlin.py                 # the whole city, ~1,066 tiles
+```
+
+This builds the city as 1 × 1 km tiles, matching the laser scan's own km grid,
+into `data/berlin/` at the repository root. It is git-ignored and local only:
+at full detail the whole city is 10–20 GB, far more than the repository or
+Vercel can hold. `npm run dev` serves it, and when `data/berlin/world.json`
+exists the game streams those tiles instead of the committed Kreuzberg area.
+
+* **Tiles are the single-area build, run per km** with a 100 m margin. Hole
+  filling, the navigation clean-up and roof heights see past the edge, then
+  everything is cropped back. Each building, tree and piece of furniture
+  belongs to the one tile its centre is in. The terrain keeps one extra row and
+  column, so neighbouring tiles meet without a seam.
+* **OpenStreetMap comes from one download**, Geofabrik's daily Berlin extract,
+  read by a small PBF reader (`osmpbf.py`, `osmlocal.py`). The pipeline would
+  otherwise send the public Overpass API about 4,000 heavy queries. The answers
+  are written as the same cache files Overpass responses would be. The extract
+  covers Berlin only, so tiles on the boundary have no OSM data on the
+  Brandenburg side.
+* **Resumable and playable while it runs.** Tiles are built nearest the spawn
+  first, `world.json` is rewritten after each one, and finished tiles are
+  skipped on the next run. `--workers` (default 4) sets parallelism; each
+  worker needs up to ~10 GB of memory, mostly OSM2World's Java heap. Logs per
+  tile are in `cache/berlin_logs/`.
+* **Streaming in the client:** full detail (1 m terrain, buildings, trees,
+  furniture, navigation, labels) for tiles within 800 m. Within 2.6 km there
+  is coarse terrain (4 m) under each tile's 50 cm orthophoto, for the view from
+  the air. 20 cm orthophotos are swapped in per 100 m chunk within ~320 m. Fog
+  closes before the edge of what is loaded. Geometry is stored relative to each
+  tile, so 40 km of coordinates don't jitter in 32-bit floats.
+
+### Data layers
+
+Other datasets appear in the city as labelled pins. `L` opens the panel, where
+each layer can be switched on and off.
+
+```bash
+python3 pipeline/build_layers.py      # bake the layers listed in pipeline/layers.json
+```
+
+* **Baked from Berlin's geodata services.** Most open datasets on
+  [daten.berlin.de](https://daten.berlin.de) are also published as a WFS on
+  gdi.berlin.de. An entry in `pipeline/layers.json` names the service, the
+  feature type and which properties make the label and the second line.
+  `build_layers.py` fetches the whole city, takes the licence from the service's
+  own capabilities, and writes `web/public/data/layers/`: small, committed, and
+  shared by the Kreuzberg build and all of Berlin. Public toilets and schools
+  are included as examples. Lines and areas are placed at their centre.
+* **Dropped in at runtime.** Drag a GeoJSON or CSV file onto the game, or use
+  the panel's button. It is read in the browser and never uploaded. GeoJSON
+  may be WGS84, EPSG:25833 or Web Mercator. CSV needs `lat`/`lon` columns
+  (or `breite`/`länge`) or `x`/`y` in EPSG:25833, with commas, semicolons and
+  German decimal commas all accepted. The label comes from `name`,
+  `bezeichnung`, `titel` and the like. Points more than 60 km from Berlin are
+  left out, which catches swapped columns.
+
+Only open, non-personal data belongs in a layer.
 
 ---
 
@@ -220,7 +283,8 @@ which is what lets them receive shadows. At night the window layer glows.
 * **The ground is flat-shaded at kerb scale.** The terrain is 1 m, so kerbs and
   steps are painted, not modelled.
 * The covered area is only what was built — walk far enough and you reach the
-  edge.
+  edge. With all of Berlin built, the edge is the city boundary; tiles load as
+  you approach, and an unloaded tile cannot be entered until it has.
 * Driving is arcade-simple: no suspension, no proper collision response.
 
 ## Attribution
