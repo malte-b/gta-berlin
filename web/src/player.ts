@@ -108,13 +108,7 @@ export class Player {
     if (!(mode in MODES)) return this.mode;
     this.mode = mode as Mode;
     this.flying = false;
-    const w = this.world;
-    const spot = w.nav.nearestPassable(this.pos.x, this.pos.z, this.driving, 140);
-    if (spot) {
-      this.pos.x = spot[0];
-      this.pos.z = spot[1];
-    }
-    this.pos.y = w.height(this.pos.x, this.pos.z);
+    this.settle(140);
     this.heading = this.yaw;
     this.speed = 0;
     this.vel.set(0, 0, 0);
@@ -126,7 +120,7 @@ export class Player {
   }
 
   private passable(x: number, z: number): boolean {
-    return this.world.canStep(this.pos.x, this.pos.z, x, z, this.driving);
+    return this.world.canStep(this.pos.x, this.pos.z, x, z, this.driving, this.pos.y);
   }
 
   /** Move to (nx, nz) if allowed, sliding along whichever axis is free. */
@@ -220,7 +214,7 @@ export class Player {
     this.strideDist += Math.hypot(this.pos.x - before.x, this.pos.z - before.z);
     this.pos.y += this.vel.y * dt;
 
-    const g = w.height(this.pos.x, this.pos.z);
+    const g = w.height(this.pos.x, this.pos.z, this.pos.y);
     if (this.pos.y <= g) {
       this.pos.y = g;
       this.vel.y = 0;
@@ -264,7 +258,7 @@ export class Player {
     if (hit) this.speed *= car ? -0.22 : -0.12;
 
     this.strideDist += Math.abs(this.speed) * dt;
-    this.pos.y = w.height(this.pos.x, this.pos.z);
+    this.pos.y = w.height(this.pos.x, this.pos.z, this.pos.y);
     this.yaw = this.heading;
     this.onGround = true;
   }
@@ -299,7 +293,7 @@ export class Player {
     }
 
     // touching the ground ends the flight; no toggle needed
-    const g = this.world.height(this.pos.x, this.pos.z);
+    const g = this.world.height(this.pos.x, this.pos.z, this.pos.y);
     if (this.pos.y <= g + 0.05) {
       this.land();
     }
@@ -307,14 +301,11 @@ export class Player {
 
   /** Put the player back on their feet wherever they came down. */
   land(): void {
-    const w = this.world;
     this.flying = false;
     this.launched = false;
     this.takeoffCooldown = LAND_COOLDOWN;
     this.justLanded = 0.9;
-    const spot = w.nav.nearestPassable(this.pos.x, this.pos.z, this.driving, 60);
-    if (spot) { this.pos.x = spot[0]; this.pos.z = spot[1]; }
-    this.pos.y = w.height(this.pos.x, this.pos.z);
+    this.settle(60);
     this.vel.set(0, 0, 0);
     this.onGround = true;
     // level the view off so you are not left staring at the sky
@@ -327,12 +318,27 @@ export class Player {
       this.launched = false;
       this.pos.y = Math.max(this.pos.y, this.world.height(this.pos.x, this.pos.z) + 40);
     } else {
-      const w = this.world;
-      const spot = w.nav.nearestPassable(this.pos.x, this.pos.z, this.driving, 200);
-      if (spot) { this.pos.x = spot[0]; this.pos.z = spot[1]; }
-      this.pos.y = w.height(this.pos.x, this.pos.z);
+      this.settle(200);
     }
     return this.flying;
+  }
+
+  /**
+   * Come to rest on whatever is below: a bridge deck where you are over one
+   * (one a car can use, when driving), otherwise the nearest ground the
+   * current mode can use, up to maxR metres away.
+   */
+  private settle(maxR: number): void {
+    const w = this.world;
+    const y = w.height(this.pos.x, this.pos.z, this.pos.y);
+    const deck = w.deckAt(this.pos.x, this.pos.z, y, this.driving ? 1.0 : 0.3);
+    if (deck && (!this.driving || deck.kind !== 'path')) {
+      this.pos.y = y;
+      return;
+    }
+    const spot = w.nav.nearestPassable(this.pos.x, this.pos.z, this.driving, maxR);
+    if (spot) { this.pos.x = spot[0]; this.pos.z = spot[1]; }
+    this.pos.y = w.height(this.pos.x, this.pos.z);
   }
 
   applyCamera(cam: THREE.PerspectiveCamera): THREE.Vector3 {

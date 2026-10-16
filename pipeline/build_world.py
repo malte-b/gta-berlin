@@ -9,6 +9,7 @@
                terrain                                       (ODbL)
     furniture  signs, bollards, benches, bus shelters, street lamps from the
                street survey and lighting register, by OSM2World (dl-de/zero-2.0)
+    bridges    OSM bridge ways as decks at the laser scan's height (ODbL, ALS)
 
 Every download is cached under cache/, so re-running after a tweak takes
 seconds. --refresh re-queries OSM and the tree cadastre; the laser scan does
@@ -35,13 +36,16 @@ from collections import deque
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import als                                                       # noqa: E402
+import bridges                                                   # noqa: E402
 import fetch                                                     # noqa: E402
 import groundcover                                               # noqa: E402
 import navgrid as ng                                             # noqa: E402
 import ortho                                                     # noqa: E402
 import osm3d                                                     # noqa: E402
+import pack_buildings                                            # noqa: E402
 import street_furniture                                          # noqa: E402
 import trees as trees_mod                                        # noqa: E402
+import water as water_mod                                        # noqa: E402
 from geo import ORIGIN_E, ORIGIN_H, ORIGIN_N, utm33_inv          # noqa: E402
 from raster import Grid                                          # noqa: E402
 
@@ -252,9 +256,46 @@ def build(area, out, args, margin=0, log=log):
     def to_world(e, n_):
         return e - ORIGIN_E, -(n_ - ORIGIN_N)
 
+    # --- bridges: decks out of the terrain ----------------------------------
+    log("Bridges from OpenStreetMap, at the laser scan's deck heights ...")
+    acache = os.path.join(CACHE, "als")
+    grid = (X0, Z0, int(E1 - E0), int(N1 - N0))
+    graw = als._window(E0, N0, E1, N1, acache, "ground")[0]
+    traw = als._window(E0, N0, E1, N1, acache, "top")[0]
+    # station halls: under their roofs the scan sees the roof, not the tracks
+    osm_path = osm3d.load_osm(bbox_ll, os.path.join(CACHE, "osm"), args.refresh)
+    nodes, ways, rels = osm3d.parse_osm(osm_path)
+    decks = bridges.decks(bridges.load(bbox_ll, os.path.join(CACHE, "osm"), args.refresh),
+                          graw, traw, grid, bridges.hall_mask(ways, nodes, grid))
+    del traw
+    log("  %d decks: %s" % (len(decks), ", ".join(
+        "%d %s" % (sum(d["kind"] == k for d in decks), k) for k in ("road", "path", "rail"))))
+
     # --- terrain: ALS ground returns ---------------------------------------
     log("Terrain from the airborne laser scan ...")
-    h, nx, nz, measured, raised = als.terrain(E0, N0, E1, N1, os.path.join(CACHE, "als"))
+    clear, settle = bridges.clearer(decks, grid)
+    h, nx, nz, measured, raised = als.terrain(E0, N0, E1, N1, acache, clear=clear, settle=settle)
+    # --- ground cover ------------------------------------------------------
+    log("Ground cover from OpenStreetMap ...")
+    gdata = groundcover.load(bbox_ll, os.path.join(CACHE, "osm"), args.refresh)
+    cover, passages, counts, water = groundcover.build(
+        gdata, X0, Z0, nx, nz, os.path.join(out, "cover.png"), bridges.footprint(decks, grid))
+    log("  %(road)d roads, %(path)d paths, %(green)d green areas, %(water)d water" % counts
+        + "  -> cover.png %d x %d (%.0f KB)" % (cover["w"], cover["h"], cover["bytes"] / 1024))
+
+    # --- water: flat, at its measured level --------------------------------
+    log("Water surfaces at the laser scan's level ...")
+    n = nx * nz
+    wet = [water.get(X0 + (k % nx) + 0.5, Z0 + (k // nx) + 0.5) > 127 for k in range(n)]
+    under_deck = bridges.mask(decks, grid)
+    wlev, wbx = water_mod.levels(wet, graw, nx, nz, under_deck)
+    sunk = water_mod.settle(h, wet, wlev, wbx, nx, nz, under_deck)
+    del graw
+    measured_w = [v for v in wlev if v is not None]
+    log("  %d blocks of water, levels %s; %d terrain cells pushed under the surface"
+        % (len(measured_w), "%.1f .. %.1f m" % (min(measured_w), max(measured_w)) if measured_w else "-",
+           sunk))
+
     terr = Terrain([v - ORIGIN_H for v in h], nx, nz, X0, Z0)
     if margin:
         keep = Terrain(crop(terr.h, nx, margin, margin, sx + 1, sz + 1), sx + 1, sz + 1, x0, z0)
@@ -263,17 +304,19 @@ def build(area, out, args, margin=0, log=log):
     blob, hmin, hmax = keep.to_bytes()
     with open(os.path.join(out, "terrain.bin"), "wb") as fh:
         fh.write(blob)
-    log("  %d x %d at 1 m, %.0f%% measured, %.1f .. %.1f m above sea level"
+    log("  terrain %d x %d at 1 m, %.0f%% measured, %.1f .. %.1f m above sea level"
         % (keep.nx, keep.nz, measured * 100, hmin + ORIGIN_H, hmax + ORIGIN_H))
     log("  %d cells raised out of stairwells, ramps and light wells" % raised)
-
-    # --- ground cover ------------------------------------------------------
-    log("Ground cover from OpenStreetMap ...")
-    gdata = groundcover.load(bbox_ll, os.path.join(CACHE, "osm"), args.refresh)
-    cover, passages, counts, water = groundcover.build(
-        gdata, X0, Z0, nx, nz, os.path.join(out, "cover.png"))
-    log("  %(road)d roads, %(path)d paths, %(green)d green areas, %(water)d water" % counts
-        + "  -> cover.png %d x %d (%.0f KB)" % (cover["w"], cover["h"], cover["bytes"] / 1024))
+    bmeta = bridges.write(decks, x0, z0, sx, sz, out)
+    if bmeta:
+        log("  -> bridges.json: %d deck pieces (%.0f KB)" % (bmeta["count"], bmeta["bytes"] / 1024))
+    elif os.path.exists(os.path.join(out, "bridges.json")):
+        os.remove(os.path.join(out, "bridges.json"))
+    wmeta = water_mod.write(wet, wlev, wbx, nx, nz, X0, Z0, x0, z0, sx, sz, out)
+    if wmeta:
+        log("  -> water.json (%.0f KB)" % (wmeta["bytes"] / 1024))
+    elif os.path.exists(os.path.join(out, "water.json")):
+        os.remove(os.path.join(out, "water.json"))
 
     # --- orthophotos -------------------------------------------------------
     log("True orthophotos (20 cm) ...")
@@ -285,8 +328,6 @@ def build(area, out, args, margin=0, log=log):
     # --- buildings ---------------------------------------------------------
     log("Buildings: OSM Simple 3D Buildings via OSM2World ...")
     java, jar = ensure_osm2world(args.osm2world)
-    osm_path = osm3d.load_osm(bbox_ll, os.path.join(CACHE, "osm"), args.refresh)
-    nodes, ways, rels = osm3d.parse_osm(osm_path)
     log("  %d ways, %d relations" % (len(ways), len(rels)))
     # heights OSM lacks, measured from the laser scan's roof returns
     top = als.roofs(E0, N0, E1, N1, os.path.join(CACHE, "als"))
@@ -299,6 +340,7 @@ def build(area, out, args, margin=0, log=log):
         % (counts["split"], counts["parts"]))
     log("  %d heights measured, %d storey counts estimated; %d outlines left to their parts"
         % (counts["heights"], counts["levels"], with_parts))
+    log("  %d underground buildings and parts left out" % counts["underground"])
     glb = os.path.splitext(patched)[0] + "_textured_lod%d_tex%d.glb" % (args.lod, args.texture_res)
     t0 = time.time()
     if ways:
@@ -320,6 +362,12 @@ def build(area, out, args, margin=0, log=log):
             "residual median %(median).3f m, p99 %(p99).3f m" % fit)
         bst = osm3d.relocate(
             glb, os.path.join(out, "buildings.glb"), to_utm, terr.height, chunk_of, in_tile)
+        if bst["buildings"]:
+            # one mesh per (chunk, material) instead of thousands: the game
+            # parses the file in one go (pipeline/pack_buildings.py)
+            packed = pack_buildings.pack(os.path.join(out, "buildings.glb"), x0, z0)
+            bst["bytes"] = os.path.getsize(os.path.join(out, "buildings.glb"))
+            log("  packed: %d meshes -> %d" % packed)
     if not bst or not bst["buildings"]:
         # forest, lake or field: no buildings to draw
         if os.path.exists(os.path.join(out, "buildings.glb")):
@@ -340,7 +388,6 @@ def build(area, out, args, margin=0, log=log):
             % (len(bst["draped"]), ", ".join(n.replace("Building ", "") for n in bst["draped"])))
 
     # --- trees -------------------------------------------------------------
-    n = nx * nz
     solid = Grid(X0, Z0, 1.0, nx, nz)          # building outlines, reused for nav
     shapes = osm3d.footprints(nodes, ways, rels)
     for rings in shapes:
@@ -359,7 +406,7 @@ def build(area, out, args, margin=0, log=log):
     fdata = street_furniture.load(e0, n0, e1, n1, fcache, args.refresh)
     pmeta, pcounts, pmissing, pskipped = street_furniture.build(
         fdata, gdata, java, jar, os.path.join(fcache, "work_%d_%d_%d_%d" % area),
-        to_world, terr.height, in_tile, out)
+        to_world, bridges.surface(decks, grid, terr.height), in_tile, out)
     log("  %d objects: %s -> props.glb (%.1f MB), %d models"
         % (pmeta["count"], ", ".join("%d %s" % (v, k) for k, v in
                                      sorted(pcounts.items(), key=lambda kv: -kv[1])),
@@ -384,7 +431,6 @@ def build(area, out, args, margin=0, log=log):
     log("  %d building outlines, %d passages cut through them"
         % (len(shapes), len(passages)))
 
-    wet = [water.get(X0 + (k % nx) + 0.5, Z0 + (k // nx) + 0.5) > 127 for k in range(n)]
     hgt = terr.h
     steep = [False] * n
     for r in range(nz):
@@ -452,10 +498,15 @@ def build(area, out, args, margin=0, log=log):
                 "minX": x0, "minZ": z0, **nmeta},
         "attribution": ATTRIBUTION,
     }
+    if bmeta:
+        manifest["bridges"] = bmeta
+    if wmeta:
+        manifest["water"] = wmeta
     if bst["buildings"]:
         manifest["buildings"] = {
             "file": "buildings.glb", "chunk": CHUNK, "chunks": bst["chunks"],
-            "count": bst["buildings"], "triangles": bst["triangles"], "bytes": bst["bytes"]}
+            "count": bst["buildings"], "triangles": bst["triangles"], "bytes": bst["bytes"],
+            "packed": True}
     nav = {"walk": walk, "drive": drive, "sky_open": sky_open,
            "nx": sx, "nz": sz, "x0": x0, "z0": z0}
     return manifest, nav

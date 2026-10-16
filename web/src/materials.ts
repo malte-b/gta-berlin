@@ -17,7 +17,13 @@ export interface GroundTextures {
   coverSize: THREE.Vector2;
   color: Record<GroundKind, THREE.Texture>;
   normal: Record<GroundKind, THREE.Texture>;
+  /** Bridge decks overhead (Decks.footprint): no photo there, it shows the deck. */
+  under?: { map: THREE.Texture; min: THREE.Vector2; size: THREE.Vector2 };
 }
+
+/** Stands in for a tile without bridges. */
+const NOTHING_OVERHEAD = new THREE.DataTexture(new Uint8Array(4), 1, 1);
+NOTHING_OVERHEAD.needsUpdate = true;
 
 export type GroundKind = 'asphalt' | 'paving' | 'grass' | 'yard';
 
@@ -48,7 +54,9 @@ const NOISE = /* glsl */`
  * The ground: laser-scan terrain painted with what OpenStreetMap says is
  * there. The cover mask carries one class per channel (R carriageway, G path,
  * B vegetation, A water) at 0.5 m; each class has a tiling PBR texture, and
- * the mask's linear filtering gives soft edges between them.
+ * the mask's linear filtering gives soft edges between them. Water is not
+ * painted: it is a surface of its own (water.ts), and the A channel serves
+ * only the navigation grid and the minimap.
  *
  * Tiling textures repeat visibly over a city block, so every class is sampled
  * twice - at its true scale and at a larger, rotated one - and the two are
@@ -69,6 +77,9 @@ export function terrainMaterial(t: GroundTextures, ortho?: OrthoTile): THREE.Mes
     uCover: { value: t.cover },
     uCoverMin: { value: t.coverMin },
     uCoverSize: { value: t.coverSize },
+    uUnder: { value: t.under?.map ?? NOTHING_OVERHEAD },
+    uUnderMin: { value: t.under?.min ?? new THREE.Vector2() },
+    uUnderSize: { value: t.under?.size ?? new THREE.Vector2(1, 1) },
     uAsphalt: { value: t.color.asphalt }, uAsphaltN: { value: t.normal.asphalt },
     uPaving: { value: t.color.paving }, uPavingN: { value: t.normal.paving },
     uGrass: { value: t.color.grass }, uGrassN: { value: t.normal.grass },
@@ -94,6 +105,8 @@ export function terrainMaterial(t: GroundTextures, ortho?: OrthoTile): THREE.Mes
         uniform sampler2D uOrtho;
         uniform vec2 uOrthoMin;
         uniform float uOrthoSize;
+        uniform sampler2D uUnder;
+        uniform vec2 uUnderMin, uUnderSize;
         ${NOISE}
         // An aerial photo is not albedo: it already holds the sun and sky of
         // the survey day. Lit again as if it were bare surface colour it
@@ -135,9 +148,8 @@ export function terrainMaterial(t: GroundTextures, ortho?: OrthoTile): THREE.Mes
         albedo = mix(albedo, lawn, gCover.b);
         albedo = mix(albedo, tile(uPaving, rot(wxz), ${(TILE_METRES.paving * 0.8).toFixed(2)}) * vec3(0.95, 0.92, 0.86), gCover.g);
         albedo = mix(albedo, tile(uAsphalt, wxz, ${TILE_METRES.asphalt.toFixed(2)}), gCover.r);
-        vec3 water = vec3(0.035, 0.07, 0.085);
-        albedo = mix(albedo, water, gCover.a);
         #ifdef USE_ORTHO
+          vec3 ownAlbedo = albedo;
           vec3 avg = mean(uYard);
           avg = mix(avg, mean(uGrass) * vec3(0.48, 0.64, 0.28), gCover.b);
           avg = mix(avg, mean(uPaving) * vec3(0.95, 0.92, 0.86), gCover.g);
@@ -146,6 +158,19 @@ export function terrainMaterial(t: GroundTextures, ortho?: OrthoTile): THREE.Mes
           float near = 1.0 - smoothstep(12.0, 55.0, length(cameraPosition - vWorldPos));
           vec3 photo = photoAlbedo(texture2D(uOrtho, (wxz - uOrthoMin) / uOrthoSize).rgb);
           albedo = photo * mix(1.0, clamp(grain, 0.4, 1.8), near * 0.75);
+          // under a bridge the photo shows its deck, cars and all: the
+          // ground there keeps its own material
+          vec2 uuv = (wxz - uUnderMin) / uUnderSize;
+          float under = texture2D(uUnder, uuv).r
+                      * step(0.0, uuv.x) * step(uuv.x, 1.0) * step(0.0, uuv.y) * step(uuv.y, 1.0);
+          albedo = mix(albedo, ownAlbedo, under);
+          // A photo taken from above has nothing to say about a wall: on
+          // embankments, abutments and quay walls it smeared into streaks.
+          // Steep ground gets a plain wall surface instead.
+          vec3 faceN = normalize(cross(dFdx(vWorldPos), dFdy(vWorldPos)));
+          float steep = 1.0 - smoothstep(0.55, 0.8, abs(faceN.y));
+          vec3 wall = vec3(0.30, 0.29, 0.27) * (0.8 + 0.4 * vnoise(vec2(wxz.x + wxz.y, vWorldPos.y) * 0.7));
+          albedo = mix(albedo, wall, steep * 0.85);
         #else
           // large-scale grime so streets are not uniformly clean
           albedo *= 0.86 + 0.22 * vnoise(wxz * 0.11);
@@ -155,7 +180,6 @@ export function terrainMaterial(t: GroundTextures, ortho?: OrthoTile): THREE.Mes
       .replace('#include <roughnessmap_fragment>', /* glsl */`
         float roughnessFactor = roughness;
         roughnessFactor = mix(roughnessFactor, 0.78, gCover.r);
-        roughnessFactor = mix(roughnessFactor, 0.06, gCover.a);
         roughnessFactor = mix(roughnessFactor, 0.12, uWet * (1.0 - gCover.b));
       `)
       .replace('#include <normal_fragment_maps>', /* glsl */`
@@ -165,9 +189,6 @@ export function terrainMaterial(t: GroundTextures, ortho?: OrthoTile): THREE.Mes
           tn = mix(tn, tileN(uGrassN, p, ${TILE_METRES.grass.toFixed(2)}), gCover.b);
           tn = mix(tn, tileN(uPavingN, rot(p), ${(TILE_METRES.paving * 0.8).toFixed(2)}), gCover.g);
           tn = mix(tn, tileN(uAsphaltN, p, ${TILE_METRES.asphalt.toFixed(2)}), gCover.r);
-          // ripples on water
-          vec2 wv = vec2(vnoise(p * 0.7 + uTime * 0.3), vnoise(p * 0.7 - uTime * 0.25 + 3.1)) - 0.5;
-          tn = mix(tn, vec3(wv * 0.6, 1.0), gCover.a);
           // The ground faces roughly up, so world x and z serve as tangent
           // and bitangent; take both into view space alongside the normal.
           vec3 T = normalize(mat3(viewMatrix) * vec3(1.0, 0.0, 0.0));

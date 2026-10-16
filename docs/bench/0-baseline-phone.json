@@ -1,0 +1,74 @@
+{
+ "profile": "phone",
+ "loadSeconds": 2.4,
+ "loadMB": 34.7,
+ "street": {
+  "name": "street level, standing",
+  "frames": 1547,
+  "fps": 103,
+  "p50ms": 9.6,
+  "p95ms": 11.7,
+  "worstMs": 14,
+  "hitches": 0,
+  "drawCalls": 301,
+  "trisM": 3.91,
+  "downloadedMB": 0,
+  "mem": {
+   "texMB": 597,
+   "geoMB": 324,
+   "heapMB": 461,
+   "tiles": {
+    "buildings": 5250,
+    "trees": 7621,
+    "tiles": 33,
+    "full": 6
+   }
+  }
+ },
+ "fly": {
+  "name": "flying 1.5 km at 35 m",
+  "frames": 2463,
+  "fps": 62,
+  "p50ms": 14.3,
+  "p95ms": 23.1,
+  "worstMs": 483,
+  "hitches": 18,
+  "drawCalls": 464,
+  "trisM": 6.07,
+  "downloadedMB": 108,
+  "mem": {
+   "texMB": 784,
+   "geoMB": 355,
+   "heapMB": 692,
+   "tiles": {
+    "buildings": 5116,
+    "trees": 10956,
+    "tiles": 40,
+    "full": 6
+   }
+  }
+ },
+ "air": {
+  "name": "overview from 300 m",
+  "frames": 936,
+  "fps": 62,
+  "p50ms": 15.6,
+  "p95ms": 19.6,
+  "worstMs": 26,
+  "hitches": 0,
+  "drawCalls": 709,
+  "trisM": 7.15,
+  "downloadedMB": 0,
+  "mem": {
+   "texMB": 808,
+   "geoMB": 396,
+   "heapMB": 697,
+   "tiles": {
+    "buildings": 6772,
+    "trees": 10646,
+    "tiles": 41,
+    "full": 7
+   }
+  }
+ }
+}

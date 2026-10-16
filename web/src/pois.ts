@@ -325,6 +325,8 @@ export class PoiLayer {
     const along: [number, number] = [sin, cos];        // down the street
     const across: [number, number] = [cos, -sin];      // letter height, perpendicular
 
+    // on the bridge or under it: decided once, for the whole label
+    const level = this.world.streetLevel(spot.x, spot.z, along) + 0.5;
     const segs = Math.max(4, Math.min(28, Math.round(len / 1.2)));
     const pos: number[] = [];
     const uv: number[] = [];
@@ -339,7 +341,7 @@ export class PoiLayer {
         const v = (j - 0.5) * wide;
         const dx = along[0] * u + across[0] * v;
         const dz = along[1] * u + across[1] * v;
-        const y = this.world.surfaceHeight(spot.x + dx, spot.z + dz);
+        const y = this.world.surfaceHeight(spot.x + dx, spot.z + dz, level);
         if (y < lo) lo = y;
         if (y > hi) hi = y;
         pos.push(dx, y + 0.14, dz);

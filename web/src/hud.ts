@@ -91,7 +91,8 @@ export class HUD {
     }
 
     ctx.translate(size / 2, size / 2);
-    ctx.rotate(-player.yaw + Math.PI);
+    // the camera looks along (-sin yaw, -cos yaw); north (-z) is up on the map
+    ctx.rotate(-player.yaw);
     ctx.fillStyle = '#ffb454';
     ctx.strokeStyle = '#14161c';
     ctx.lineWidth = 1.3;

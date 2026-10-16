@@ -5,7 +5,8 @@ import { defineConfig, type Plugin } from 'vite';
 // All of Berlin (pipeline/build_berlin.py) is 10-20 GB, too much for public/,
 // which every build would copy into dist/. It stays in data/berlin/ at the
 // repository root and the dev server serves it from there.
-const BERLIN = join(__dirname, 'data', 'berlin');
+// BERLIN_DIR=berlin_bridges npm run dev  serves another build of it instead
+const BERLIN = join(__dirname, 'data', process.env.BERLIN_DIR || 'berlin');
 const TYPES: Record<string, string> = {
   '.json': 'application/json', '.jpg': 'image/jpeg', '.png': 'image/png',
   '.glb': 'model/gltf-binary', '.bin': 'application/octet-stream', '.hdr': 'image/vnd.radiance',

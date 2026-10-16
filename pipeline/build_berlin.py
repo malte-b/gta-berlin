@@ -9,6 +9,7 @@ scan's own km grid, 1,066 of them, which is exactly the area Berlin surveys.
     python3 pipeline/build_berlin.py --radius 2           # only within 2 km of the spawn
     python3 pipeline/build_berlin.py --near 52.52 13.40 --radius 1
     python3 pipeline/build_berlin.py --workers 6
+    python3 pipeline/build_berlin.py --osm-refresh        # today's OSM, changed tiles only
 
 Tiles are built nearest the spawn first, and world.json is rewritten after
 each one, so the game can be played while the build is still running: it
@@ -42,9 +43,13 @@ import street_furniture                                          # noqa: E402
 from geo import ORIGIN_E, ORIGIN_H, ORIGIN_N, utm33, utm33_inv   # noqa: E402
 
 ROOT = bw.ROOT
-# not under web/public: every vite build would copy it into dist/
-OUT = os.path.join(ROOT, "data", "berlin")
+# not under web/public: every vite build would copy it into dist/. BERLIN_OUT
+# builds elsewhere, e.g. a new version next to the one being served
+OUT = os.environ.get("BERLIN_OUT") or os.path.join(ROOT, "data", "berlin")
 LOGS = os.path.join(bw.CACHE, "berlin_logs")
+# tiles whose OSM data changed but which are not rebuilt yet, so that an
+# interrupted --osm-refresh still rebuilds them on the next run
+PENDING = os.path.join(bw.CACHE, "osm", "pending_tiles.json")
 TILE = 1000
 MARGIN = 100
 
@@ -62,14 +67,26 @@ def tile_area(key):
     return te * TILE, tn * TILE, (te + 1) * TILE, (tn + 1) * TILE
 
 
-def osm_caches(keys):
+def osm_caches(keys, refresh=False):
     """Answer every OSM question the tiles will ask from the Berlin extract,
-    as the cache files the loaders look for, so none of them goes to Overpass."""
+    as the cache files the loaders look for, so none of them goes to Overpass.
+
+    With refresh, a fresh extract is fetched and every tile's answers are
+    regenerated; only files whose content changed are rewritten. Returns the
+    tiles whose OSM data changed."""
     def write(path, text):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path + ".part", "w", encoding="utf-8") as fh:
             fh.write(text)
         os.replace(path + ".part", path)
+
+    def update(path, text):
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as fh:
+                if fh.read() == text:
+                    return False
+        write(path, text)
+        return True
 
     osm = os.path.join(bw.CACHE, "osm")
     jobs = []
@@ -80,30 +97,43 @@ def osm_caches(keys):
         paths = {
             "buildings": os.path.join(osm, "buildings_%.5f_%.5f_%.5f_%.5f.osm" % box),
             "ground": os.path.join(osm, "ground_%.5f_%.5f_%.5f_%.5f.json" % box),
+            "bridges": os.path.join(osm, "bridges_%.5f_%.5f_%.5f_%.5f.json" % box),
             "pois": os.path.join(bw.CACHE, "pois", "pois_%s.json" % key),
             "furniture": os.path.join(bw.CACHE, "furniture",
                                       "furniture_%d_%d_%d_%d.json" % (e0, n0, e1, n1)),
         }
         furn = json.load(open(paths["furniture"])) if os.path.exists(paths["furniture"]) else {}
-        if (all(os.path.exists(paths[k]) for k in ("buildings", "ground", "pois"))
+        if (not refresh
+                and all(os.path.exists(paths[k]) for k in ("buildings", "ground", "bridges", "pois"))
                 and street_furniture.BENCHES in furn):
             continue
-        jobs.append((box, tile_box, paths, furn))
+        jobs.append((key, box, tile_box, paths, furn))
     if not jobs:
-        return
+        return set()
     log("OpenStreetMap for %d tiles from the Geofabrik Berlin extract ..." % len(jobs))
-    idx = osmlocal.OsmIndex(osmlocal.download(os.path.join(bw.CACHE, "osm")))
-    for box, tile_box, paths, furn in jobs:
-        if not os.path.exists(paths["buildings"]):
-            write(paths["buildings"], idx.buildings_osm(box))
-        if not os.path.exists(paths["ground"]):
-            write(paths["ground"], json.dumps(idx.ground_json(box)))
-        if not os.path.exists(paths["pois"]):
-            write(paths["pois"], json.dumps(idx.pois_json(tile_box)))
-        if street_furniture.BENCHES not in furn:
-            furn[street_furniture.BENCHES] = idx.benches(tile_box)
-            write(paths["furniture"], json.dumps(furn))
-    log("  done")
+    # Geofabrik publishes the extract once a day; under 20 h old is today's
+    max_age = 20 / 24 if refresh else 7
+    idx = osmlocal.OsmIndex(osmlocal.download(os.path.join(bw.CACHE, "osm"), max_age))
+    changed = set()
+    for key, box, tile_box, paths, furn in jobs:
+        answers = {
+            "buildings": lambda: idx.buildings_osm(box),
+            "ground": lambda: json.dumps(idx.ground_json(box)),
+            "bridges": lambda: json.dumps(idx.bridges_json(box)),
+            "pois": lambda: json.dumps(idx.pois_json(tile_box)),
+        }
+        for k, answer in answers.items():
+            if refresh or not os.path.exists(paths[k]):
+                if update(paths[k], answer()):
+                    changed.add(key)
+        if refresh or street_furniture.BENCHES not in furn:
+            benches = idx.benches(tile_box)
+            if furn.get(street_furniture.BENCHES) != benches:
+                furn[street_furniture.BENCHES] = benches
+                write(paths["furniture"], json.dumps(furn))
+                changed.add(key)
+    log("  done, %d tiles changed" % len(changed))
+    return changed
 
 
 def build_tile(key, args):
@@ -174,6 +204,13 @@ def write_index(env, ground_tex, spawn):
     return len(tiles)
 
 
+def save_pending(keys):
+    os.makedirs(os.path.dirname(PENDING), exist_ok=True)
+    with open(PENDING + ".part", "w") as fh:
+        json.dump(sorted(keys), fh)
+    os.replace(PENDING + ".part", PENDING)
+
+
 def reindex():
     """Rewrite world.json from the finished tiles, keeping its shared assets."""
     old = json.load(open(os.path.join(OUT, "world.json")))
@@ -190,6 +227,8 @@ def main():
     ap.add_argument("--workers", type=int, default=4,
                     help="tiles built at once; each needs up to ~10 GB of memory")
     ap.add_argument("--rebuild", action="store_true", help="rebuild finished tiles too")
+    ap.add_argument("--osm-refresh", action="store_true",
+                    help="fetch today's OSM extract and rebuild the tiles whose OSM data changed")
     ap.add_argument("--index", action="store_true",
                     help="only rewrite world.json from the tiles already built")
     bw.add_args(ap)
@@ -200,7 +239,7 @@ def main():
     if args.refresh:
         # it would send every tile's OSM questions to Overpass after all
         ap.error("--refresh is for build_world.py; here OSM comes from the weekly "
-                 "refreshed extract - delete files under cache/ to fetch them again")
+                 "refreshed extract - use --osm-refresh to fetch today's")
 
     # the spawn and build centre: the single-area build's pinned spawn
     spawn = None
@@ -228,11 +267,19 @@ def main():
     keys.sort(key=dist)
     todo = [k for k in keys if args.rebuild
             or not os.path.exists(os.path.join(tile_dir(k), "tile.json"))]
+    pending = set()
+    if args.osm_refresh:
+        if os.path.exists(PENDING):
+            pending = set(json.load(open(PENDING)))
+        pending |= osm_caches(keys, refresh=True)
+        save_pending(pending)
+        todo = [k for k in keys if k in pending or k in todo]
+    else:
+        osm_caches(todo)
     log("%d tiles selected, %d to build, %d workers -> %s"
         % (len(keys), len(todo), args.workers, os.path.relpath(OUT, ROOT)))
 
     os.makedirs(OUT, exist_ok=True)
-    osm_caches(todo)
     _java, _jar, ground_tex, env = bw.shared_assets(args, OUT)
     write_index(env, ground_tex, spawn)
 
@@ -250,6 +297,9 @@ def main():
                     % (key, secs, err[:160], key))
             else:
                 done += 1
+                if key in pending:
+                    pending.discard(key)
+                    save_pending(pending)
                 n_tiles = write_index(env, ground_tex, spawn)
                 left = len(todo) - done - failed
                 rate = (time.time() - t_all) / (done + failed)

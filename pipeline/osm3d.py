@@ -912,10 +912,17 @@ def complete_3d_tags(osm_path, out_path, nodes, ways, rels, ground, top, grid):
 
     tree = ET.parse(osm_path)
     root = tree.getroot()
+    buried = []
     for el in root:
         key = (el.tag, int(el.get("id", "0")))
         for k, v in adds.get(key, {}).items():
             ET.SubElement(el, "tag", k=k, v=v)
+        if el.tag in ("way", "relation") and _underground({t.get("k"): t.get("v")
+                                                           for t in el.findall("tag")}):
+            buried.append(el)
+    for el in buried:
+        root.remove(el)
+    counts["underground"] = len(buried)
     # generated parts: new nodes and ways with negative ids, as editors do
     from geo import utm33_inv
     nid = wid = 0
@@ -935,6 +942,21 @@ def complete_3d_tags(osm_path, out_path, nodes, ways, rels, ground, top, grid):
             ET.SubElement(way, "tag", k=k, v=v)
     tree.write(out_path, encoding="utf-8", xml_declaration=True)
     return counts, skipped
+
+
+def _underground(tags):
+    """A building or part below the street: tagged so, or on a negative layer
+    without saying it is at the surface anyway."""
+    if "building" not in tags and "building:part" not in tags:
+        return False
+    loc = tags.get("location", "")
+    if loc in ("underground", "underwater"):
+        return True
+    try:
+        layer = int(tags.get("layer", "0"))
+    except ValueError:
+        return False
+    return layer < 0 and loc not in ("surface", "overground", "roof", "rooftop")
 
 
 def footprints(nodes, ways, rels):

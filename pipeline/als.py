@@ -447,16 +447,23 @@ def close_pits(h, nx, nz, radius=PIT_RADIUS):
     return out, raised
 
 
-def terrain(e0, n0, e1, n1, cache_dir):
+def terrain(e0, n0, e1, n1, cache_dir, clear=None, settle=None):
     """Bare-earth heights over [e0,e1) x [n0,n1) at 1 m, north-up rows.
+    clear(h, nx, nz), if given, may blank returns before holes are filled
+    (bridges.clearer: decks the scanner took for ground); settle(h, nx, nz)
+    may adjust the filled result (keep it under the decks).
 
     Returns (heights, nx, nz, known_fraction, cells raised by close_pits)."""
     h, nx, nz = _window(e0, n0, e1, n1, cache_dir, "ground")
     h, raised = close_pits(h, nx, nz)
+    if clear:
+        clear(h, nx, nz)
     known = [v == v for v in h]
     frac = sum(known) / len(known)
     h = fill_holes(h, nx, nz)
     h = smooth_filled(h, known, nx, nz)
+    if settle:
+        settle(h, nx, nz)
     return h, nx, nz, frac, raised
 
 

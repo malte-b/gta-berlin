@@ -112,6 +112,10 @@ exists the game streams those tiles instead of the committed Kreuzberg area.
   are written as the same cache files Overpass responses would be. The extract
   covers Berlin only, so tiles on the boundary have no OSM data on the
   Brandenburg side.
+* **Buildings are packed** into one mesh per 275 m chunk and material
+  (`pack_buildings.py`), so the game has a few hundred meshes per tile to
+  load instead of thousands. New builds do this themselves; for an older
+  build run `python3 pipeline/pack_buildings.py data/berlin` (seconds).
 * **Resumable and playable while it runs.** Tiles are built nearest the spawn
   first, `world.json` is rewritten after each one, and finished tiles are
   skipped on the next run. `--workers` (default 4) sets parallelism; each
@@ -281,6 +285,49 @@ RGBA mask instead, and the terrain shader blends tiling PBR textures by it.
 Every texture is sampled twice, at its true scale and a larger rotated one,
 mixed by noise, so the tiling does not show.
 
+### Bridges
+
+The terrain is one height per square metre, so it can hold a bridge deck or
+what runs underneath, not both. The laser scan does not count most decks as
+ground: over a road or tracks the ground beneath is in the deck's shadow, and
+hole filling used to smear deck and cutting into a wavy ramp; over water the
+river polygon painted whatever was left blue. So bridges are built on their
+own (`bridges.py`):
+
+* **Where and how wide:** OSM ways tagged `bridge=*`, for roads, paths and
+  railways, including bridges under construction. Ways that continue each
+  other are joined first, so a viaduct split into many ways is measured as
+  one. Where OSM maps the bridge's outline (`man_made=bridge`, about 1,000 in
+  Berlin), the main deck is widened to it on each side and run on to its
+  ends; other decks at the same height inside it are covered by it and
+  dropped. Elsewhere, decks side by side at one level - a carriageway and
+  its separately mapped pavements, parallel tracks - widen to meet halfway.
+* **How high:** from the laser scan. The deck level is what the middle of
+  the bridge returns along its centreline, which the deck itself covers. The
+  ends are pinned to the road carrying on past each abutment, but only if
+  that is within 4.5 m of the deck level: OSM often stops a bridge at the
+  edges of the street it spans, so just past its end can still be the
+  street below. In between, the median of the returns near the line between
+  the ends counts, so lamp posts, catenary, lorries and the bracing of a
+  truss bridge do not lift it. Under station halls and platform roofs the
+  upper returns are the roof, so they are ignored there.
+* **Underneath:** returns at deck height are dropped before hole filling, so
+  the river or the cutting carries on below. Under the last few metres at
+  each abutment the terrain is lifted to the deck, so road and bridge meet
+  without a step.
+* **Underneath, on the ground:** roads on bridges are not painted onto the
+  ground cover, and where nothing is mapped under a deck the cover continues
+  from beside it - the river under a river bridge. The orthophoto shows the
+  deck's top, so the ground under a deck keeps its own material instead.
+* **In the game:** each deck is a slab with the orthophoto on top, like the
+  roofs. Street furniture within 2 m of a road or path deck stands on it.
+  Height and movement checks take the player's height into account: you can
+  walk and drive across the Spree, and still drive under a railway viaduct.
+
+Buildings OSM puts underground (`location=underground`, or a negative
+`layer` without `location=surface`) are left out: shops in U-Bahn stations
+and underground car parks would otherwise stand on the street above.
+
 ### Where you can go
 
 `nav.bin` is a 1 m grid: walkable means not inside a building footprint (from
@@ -348,6 +395,9 @@ what the [Berliner Erfrischungskarte](https://erfrischungskarte.odis-berlin.de/)
 surfaces. Re-run with `--refresh` to re-query Overpass.
 
 ## Performance
+
+Measurements and what each optimisation changes are
+in [docs/performance.md](docs/performance.md) (`npm run bench`).
 
 Measured on the default area (739 buildings, 2,550 trees), Chrome on an Apple
 Silicon Mac:

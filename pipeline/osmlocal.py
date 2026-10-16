@@ -32,7 +32,7 @@ CELL = 0.01                 # degrees per index cell, ~700 x 1100 m in Berlin
 NATURAL = {"water"} | GREEN_NATURAL
 POI_NODE_KEYS = ("amenity", "shop", "tourism", "historic", "railway", "leisure")
 WAY_KEYS = {"building", "building:part", "highway", "natural", "waterway", "landuse",
-            "leisure", "amenity", "area:highway", "tourism"}
+            "leisure", "amenity", "area:highway", "tourism", "railway", "man_made"}
 NODE_KEYS = set(POI_NODE_KEYS) | {"highway"}
 
 
@@ -218,6 +218,18 @@ class OsmIndex:
                         or t.get("leisure") in GREEN_LEISURE):
                     els.append({"type": "relation", "id": eid, "tags": t,
                                 "members": [self._member(m) for m in members]})
+        return {"version": 0.6, "generator": "gta-berlin osmlocal", "elements": els}
+
+    def bridges_json(self, bbox):
+        """bridges.load: road, path and railway bridges and bridge outlines - `out geom`."""
+        els = []
+        for kind, eid in self._in(bbox):
+            if kind == "way":
+                t, refs = self.ways[eid]
+                if ((t.get("bridge") not in (None, "no") and ("highway" in t or "railway" in t))
+                        or t.get("man_made") == "bridge"):
+                    els.append({"type": "way", "id": eid, "nodes": refs,
+                                "geometry": self._geom(refs), "tags": t})
         return {"version": 0.6, "generator": "gta-berlin osmlocal", "elements": els}
 
     def _member(self, m):

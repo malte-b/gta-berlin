@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import type { Origin, XZ } from './geo';
+import type { DeckHit } from './bridges';
+import { setUploader } from './frames';
 import { NavGrid } from './tiles';
 import { Tile, type GroundKind, type SharedGround, type TileManifest } from './tile';
 
@@ -17,6 +19,8 @@ const FULL_IN = 800;
 const FULL_OUT = 1100;
 const COARSE_IN = 2600;
 const COARSE_OUT = 3200;
+/** How far up a surface may be and still be stepped onto, metres. */
+const STEP_UP = 1.0;
 
 /** world.json: either one area (pipeline/build_world.py) or the index of a
  *  tiled build (pipeline/build_berlin.py). */
@@ -98,6 +102,7 @@ export class World {
     this.centre = man.centre;
     this.spawnPoint = man.spawn ?? { x: man.centre.x, z: man.centre.z };
     this.aniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    setUploader((t) => renderer.initTexture(t));
 
     onProgress('ground textures');
     this.shared = await this.loadShared();
@@ -248,8 +253,32 @@ export class World {
     return t !== null && t.contains(x, z);
   }
 
+  /**
+   * The height of what you stand on at (x, z). Without y that is the bare
+   * earth. With y - where the player is now - it is the highest surface no
+   * more than a step above y: a bridge deck when you are up on it, the street
+   * when you walk underneath.
+   */
+  height(x: number, z: number, y?: number): number {
+    const g = this.ground(x, z);
+    if (y === undefined) return g;
+    let best = g <= y + STEP_UP ? g : -Infinity;
+    for (const d of this.tileAt(x, z)?.decks?.at(x, z) ?? []) {
+      if (d.y <= y + STEP_UP && d.y > best) best = d.y;
+    }
+    return best === -Infinity ? g : best;
+  }
+
+  /** The deck at (x, z) within a step of height y, if there is one. */
+  deckAt(x: number, z: number, y: number, inset = 0): DeckHit | null {
+    for (const d of this.tileAt(x, z)?.decks?.at(x, z, inset) ?? []) {
+      if (Math.abs(d.y - y) <= STEP_UP) return d;
+    }
+    return null;
+  }
+
   /** Bare-earth ground height in world metres. */
-  height(x: number, z: number): number {
+  private ground(x: number, z: number): number {
     const t = this.tileAt(x, z);
     if (t?.terrain) return t.terrain.height(x, z);
     // off the loaded world: hold the nearest edge's height
@@ -266,10 +295,19 @@ export class World {
                     Math.min(Math.max(z, f.minZ), f.minZ + f.nz - 1));
   }
 
-  /** What things painted on the ground should follow. With a bare-earth
-   *  terrain this is the same as height(). */
-  surfaceHeight(x: number, z: number): number {
-    return this.height(x, z);
+  /** The level a street running along `dir` has at (x, z): a deck going the
+   *  same way carries it, one crossing over it does not. */
+  streetLevel(x: number, z: number, dir: [number, number]): number {
+    let best = this.ground(x, z);
+    for (const d of this.tileAt(x, z)?.decks?.at(x, z) ?? []) {
+      if (Math.abs(d.dx * dir[0] + d.dz * dir[1]) > 0.8 && d.y > best) best = d.y;
+    }
+    return best;
+  }
+
+  /** What things painted on the ground should follow, near height y. */
+  surfaceHeight(x: number, z: number, y?: number): number {
+    return this.height(x, z, y);
   }
 
   inWorld(x: number, z: number): boolean {
@@ -280,7 +318,20 @@ export class World {
     return !this.nav.passable(x, z, driving);
   }
 
-  canStep(_fx: number, _fz: number, toX: number, toZ: number, driving = false): boolean {
+  /**
+   * May you move from (fx, fz) to (toX, toZ)? y is your height, which decides
+   * between a bridge and what runs under it. Onto a deck at your level is
+   * always fine - that is how the Spree gets crossed - and off one only onto
+   * ground at about the same level: a deck's sides are a drop.
+   */
+  canStep(fx: number, fz: number, toX: number, toZ: number, driving = false, y?: number): boolean {
+    if (y === undefined) return this.nav.passable(toX, toZ, driving);
+    const inset = driving ? 1.0 : 0.3;
+    const to = this.deckAt(toX, toZ, y, inset);
+    if (to) return !driving || to.kind !== 'path';
+    if (this.deckAt(fx, fz, y)) {
+      return this.nav.passable(toX, toZ, driving) && Math.abs(this.ground(toX, toZ) - y) <= STEP_UP;
+    }
     return this.nav.passable(toX, toZ, driving);
   }
 

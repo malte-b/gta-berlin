@@ -129,6 +129,44 @@ def _dist(a, b):
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
 
+def _on_deck(pts, decks):
+    """Does most of a way run over decks?"""
+    mids = [((a[0] + b[0]) / 2, (a[1] + b[1]) / 2) for a, b in zip(pts, pts[1:])]
+    return sum(1 for x, z in mids if decks(x, z)) * 2 > len(mids)
+
+
+def _fill_under(decks, grids):
+    """Cells under a deck that nothing is mapped on take the cover of the
+    nearest cell beside the deck, spreading inward a ring at a time."""
+    g0 = grids[0]
+    w, h, res = g0.w, g0.h, g0.res
+    under = bytearray(w * h)
+    todo = []
+    for r in range(h):
+        z = g0.z0 + (r + 0.5) * res
+        for c in range(w):
+            k = r * w + c
+            if decks(g0.x0 + (c + 0.5) * res, z) and not any(g.data[k] for g in grids):
+                under[k] = 1
+                todo.append(k)
+    while todo:
+        done = []
+        for k in todo:
+            r, c = divmod(k, w)
+            for rr, cc in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
+                if 0 <= rr < h and 0 <= cc < w and not under[rr * w + cc]:
+                    src = rr * w + cc
+                    for g in grids:
+                        g.data[k] = g.data[src]
+                    done.append(k)
+                    break
+        if not done:
+            break
+        for k in done:
+            under[k] = 0
+        todo = [k for k in todo if under[k]]
+
+
 def _underground(tags):
     if tags.get("tunnel") not in (None, "no") and tags.get("tunnel") != "building_passage":
         return True
@@ -138,10 +176,15 @@ def _underground(tags):
         return False
 
 
-def build(data, x0, z0, size_x, size_z, out_path):
+def build(data, x0, z0, size_x, size_z, out_path, decks=None):
     """Rasterise into an RGBA PNG. Returns (meta, passages) where passages are
     polylines of ways running *through* buildings (tunnel=building_passage),
-    which the navigation grid has to cut out of the building footprints."""
+    which the navigation grid has to cut out of the building footprints.
+
+    decks(x, z), if given, says whether a bridge deck is overhead
+    (bridges.footprint). Roads on bridges are then not painted on the ground
+    - the deck carries them - and what lies under a deck with nothing mapped
+    there continues from around it: the river under a river bridge."""
     w = int(round(size_x / RES))
     h = int(round(size_z / RES))
     road, path, green, water = (Grid(x0, z0, RES, w, h) for _ in range(4))
@@ -156,6 +199,8 @@ def build(data, x0, z0, size_x, size_z, out_path):
         if el["type"] == "way" and hw:
             pts = _pts(el.get("geometry", []))
             if len(pts) < 2:
+                continue
+            if decks and tags.get("bridge") not in (None, "no") and _on_deck(pts, decks):
                 continue
             if tags.get("tunnel") == "building_passage" or tags.get("covered") == "yes":
                 passages.append(pts)
@@ -181,6 +226,8 @@ def build(data, x0, z0, size_x, size_z, out_path):
                 counts["road"] += 1
             continue
         if tags.get("area:highway"):
+            if decks and tags.get("bridge") not in (None, "no"):
+                continue
             target = path if tags["area:highway"] in PATH_KINDS else road
             for r in _rings(el):
                 target.polygon([r])
@@ -205,6 +252,8 @@ def build(data, x0, z0, size_x, size_z, out_path):
             green.polygon(rings)
             counts["green"] += 1
 
+    if decks:
+        _fill_under(decks, [road, path, green, water])
     size = write_png(out_path, w, h, [road.data, path.data, green.data, water.data])
     meta = {"file": os.path.basename(out_path), "minX": x0, "minZ": z0,
             "res": RES, "w": w, "h": h, "bytes": size}
