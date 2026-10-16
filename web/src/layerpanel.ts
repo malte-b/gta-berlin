@@ -1,4 +1,5 @@
 import type { HUD } from './hud';
+import { has, onLang, t } from './i18n';
 import { loadBaked, parseUpload, type PointLayer } from './layers';
 import type { PoiLayer } from './pois';
 import type { World } from './world';
@@ -33,6 +34,7 @@ export class LayerPanel {
   }
 
   async load(): Promise<this> {
+    onLang(() => this.render());
     for (const l of await loadBaked()) this.pois.addLayer(l);
     this.render();
     return this;
@@ -49,10 +51,10 @@ export class LayerPanel {
         this.pois.addLayer(layer);
         const inside = layer.points.filter((p) => this.world.covers(p.x, p.z)).length;
         const notes = [
-          inside < layer.points.length ? `${inside} in the built area` : '',
-          outside ? `${outside} outside Berlin left out` : '',
+          inside < layer.points.length ? t('layers.inArea', { n: inside }) : '',
+          outside ? t('layers.outside', { n: outside }) : '',
         ].filter(Boolean);
-        this.hud.hint(`${layer.name}: ${layer.points.length} points`
+        this.hud.hint(t('layers.added', { name: layer.name, n: layer.points.length })
           + (notes.length ? ` (${notes.join(', ')})` : ''), 4);
       } catch (err) {
         this.hud.hint(`${f.name}: ${(err as Error).message}`, 6);
@@ -64,7 +66,7 @@ export class LayerPanel {
 
   private render(): void {
     this.list.replaceChildren(...[...this.pois.layers.values()].map((l) => this.row(l)));
-    if (!this.pois.layers.size) this.list.textContent = 'none yet';
+    if (!this.pois.layers.size) this.list.textContent = t('layers.none');
   }
 
   private row(l: PointLayer): HTMLElement {
@@ -80,7 +82,8 @@ export class LayerPanel {
     swatch.style.background = l.colour;
     const name = document.createElement('span');
     name.className = 'lname';
-    name.textContent = l.name;
+    // baked layers have a name in each language; uploads keep their file name
+    name.textContent = !l.uploaded && has(`layer.${l.id}`) ? t(`layer.${l.id}`) : l.name;
     const count = document.createElement('span');
     count.className = 'count';
     count.textContent = String(l.points.length);
@@ -88,7 +91,7 @@ export class LayerPanel {
     if (l.uploaded) {
       const del = document.createElement('button');
       del.textContent = '×';
-      del.title = 'remove this layer';
+      del.title = t('layers.remove');
       del.addEventListener('click', (e) => {
         e.preventDefault();
         this.pois.removeLayer(l.id);

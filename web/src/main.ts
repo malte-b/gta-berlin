@@ -8,6 +8,11 @@ import { Locator } from './locate';
 import { PoiLayer } from './pois';
 import { LayerPanel } from './layerpanel';
 import { skyMaterial } from './materials';
+import { makeGame, recordScore, type Game } from './games';
+import { Menu, type Choice } from './menu';
+import { applyStatic, setLang, t, type Lang } from './i18n';
+import { TouchControls, isTouchDevice } from './touch';
+import { makeSleigh, poseSleigh } from './sleigh';
 import { makeBike, makeHuman, makeScooter, poseCycle, poseDrive,
          poseIdle, poseJump, poseScoot, poseWalk } from './character';
 
@@ -15,7 +20,11 @@ import { makeBike, makeHuman, makeScooter, poseCycle, poseDrive,
 const boot = document.getElementById('boot')!;
 const bootMsg = document.getElementById('bootmsg')!;
 const bar = document.querySelector<HTMLElement>('#bar div')!;
-const playBtn = document.getElementById('play') as HTMLButtonElement;
+
+applyStatic();
+for (const b of document.querySelectorAll<HTMLElement>('[data-lang]')) {
+  b.addEventListener('click', () => setLang(b.dataset.lang as Lang));
+}
 
 const say = (m: string, pct?: number) => {
   bootMsg.textContent = m;
@@ -23,7 +32,7 @@ const say = (m: string, pct?: number) => {
 };
 // A failed load would otherwise leave the boot screen on its last message
 // forever, which looks like a hang rather than an error.
-const fail = (err: unknown) => say(`failed to load: ${err instanceof Error ? err.message : String(err)}`);
+const fail = (err: unknown) => say(t('boot.failed', { e: err instanceof Error ? err.message : String(err) }));
 window.addEventListener('error', (e) => fail(e.error ?? e.message));
 window.addEventListener('unhandledrejection', (e) => fail(e.reason));
 
@@ -91,13 +100,13 @@ let envDay = 0.7;
 
 /* --- world --------------------------------------------------------------- */
 
-say('reading manifest…', 0.1);
+say(t('boot.manifest'), 0.1);
 const world = new World(scene);
 await world.init((m) => say(m, 0.5), renderer);
 
 // Image-based lighting from a real (overcast) sky instead of the studio room.
 if (world.manifest.environment) {
-  say('sky lighting', 0.55);
+  say(t('boot.sky'), 0.55);
   try {
     const hdr = await new RGBELoader().loadAsync(world.envUrl(world.manifest.environment.file));
     hdr.mapping = THREE.EquirectangularReflectionMapping;
@@ -138,15 +147,20 @@ if (!await locator.applyHash((m) => say(m, 0.7))) {
     player.heading = world.spawnPoint.heading;
   }
 }
-let shadowsWanted = true;
+// shadows are the most expensive thing in the frame; phones start without
+const touchDevice = isTouchDevice();
+if (touchDevice) {
+  // a phone has no room for the full credits; the licences still show
+  document.getElementById('credits')!.dataset.i18n = 'credits.short';
+  applyStatic();
+}
+let shadowsWanted = !touchDevice;
 function applyShadows(): void {
   sun.castShadow = shadowsWanted;
 }
 applyShadows();
 
-say('ready', 1);
-playBtn.disabled = false;
-playBtn.textContent = 'Drop in';
+say(t('boot.ready'), 1);
 
 /* --- input --------------------------------------------------------------- */
 
@@ -155,6 +169,71 @@ playBtn.textContent = 'Drop in';
 let night = 0;
 const keys = new Set<string>();
 let pointerLocked = false;
+
+/* --- game modes ---------------------------------------------------------- */
+
+let game: Game | null = null;
+let gameSeed: number | null = null;
+let starting = false;
+
+const menu = new Menu((c) => void choose(c));
+
+async function choose(c: Choice): Promise<void> {
+  keys.clear();
+  lockPointer();
+  if (c.id === 'free') {
+    hud.hint(t('hint.free'), 3.2);
+    return;
+  }
+  if (starting) return;
+  starting = true;
+  const seed = 'seed' in c ? c.seed : null;
+  try {
+    const g = makeGame(c.id, { scene, world, player, hud, camera, setNight: (n) => { night = n; } });
+    hud.hint(t('hint.setup'), 8);
+    await g.load();
+    let ranked = seed;
+    if (seed !== null) {
+      const at = g.choose(seed);
+      if (at) {
+        player.setMode('foot');
+        await world.ensure(at[0], at[1]);
+        player.spawn(at[0], at[1]);
+      } else {
+        // the committed single area is too small for a fair start
+        ranked = null;
+        hud.hint(t('hint.noFair'), 5);
+      }
+    }
+    g.prepare();
+    document.body.classList.add('gaming');
+    pois.quiet = true;
+    game = g;
+    gameSeed = ranked;
+    g.start();
+    if (ranked !== null) hud.hint('', 0.01);
+  } catch (err) {
+    hud.hint(t('hint.cantStart', { e: (err as Error).message }), 6);
+  } finally {
+    starting = false;
+  }
+}
+
+function endGame(abandoned: boolean): void {
+  if (!game) return;
+  const g = game;
+  game = null;
+  g.stop();
+  document.body.classList.remove('gaming');
+  pois.quiet = false;
+  keys.clear();
+  if (abandoned || !g.result) {
+    menu.showAbandoned();
+    return;
+  }
+  const best = gameSeed !== null && recordScore(g.info.id, gameSeed, g.result.score);
+  menu.showResult(g.info.id, gameSeed, g.result, best);
+}
 
 const goInput = document.getElementById('goInput') as HTMLInputElement;
 const typing = () => document.activeElement === goInput;
@@ -165,6 +244,8 @@ addEventListener('keydown', (e) => {
     if (e.code === 'Escape') { goInput.blur(); }
     return;
   }
+  // the search and the layers panel are hidden during a game
+  if (game && (e.code === 'Slash' || e.code === 'KeyL')) return;
   if (e.code === 'Slash') {
     e.preventDefault();
     goInput.focus();
@@ -173,32 +254,43 @@ addEventListener('keydown', (e) => {
   }
   if (e.code === 'Space') e.preventDefault();
   if (keys.has(e.code)) return;
+  if (e.code === 'KeyP') {
+    if (game) endGame(true);
+    else if (menu.open) menu.hide();
+    else menu.show();
+    return;
+  }
+  if (menu.open) return;
   keys.add(e.code);
   switch (e.code) {
     // Modes sit on the number row so R and F are free for looking up and down.
     // F used to be the car, which collided with the new pitch control.
     case 'Digit1': case 'Digit2': case 'Digit3': case 'Digit4': {
-      const wanted = ['foot', 'bike', 'scooter', 'car'][Number(e.code.slice(5)) - 1];
+      const wanted = (['foot', 'bike', 'scooter', 'car'] as const)[Number(e.code.slice(5)) - 1];
+      if (player.sleigh) break;
+      if (game && !game.allows(wanted)) {
+        hud.hint(t('hint.notIn', { game: t(`mode.${game.info.id}.title`) }));
+        break;
+      }
       const m = player.setMode(wanted);
-      hud.hint({
-        foot: 'on foot',
-        bike: 'on a bike — Shift to push harder',
-        scooter: 'on an e-scooter',
-        car: 'in the car — W/S throttle, A/D steer',
-      }[m]);
+      hud.hint(t(`hint.${m}`));
       break;
     }
     case 'KeyC':
       player.camMode = (player.camMode + 1) % 3;
-      hud.hint(['third person', 'close', 'first person'][player.camMode]);
+      hud.hint(t(`hint.cam${player.camMode}`));
       break;
     case 'KeyN':
       night = night > 0.5 ? 0 : 1;
-      hud.hint(night ? 'night' : 'day');
+      hud.hint(t(night ? 'hint.night' : 'hint.day'));
       break;
     case 'KeyH': {
+      if (!player.canFly) {
+        hud.hint(t(player.sleigh ? 'hint.sleighFlies' : 'hint.noFlying'));
+        break;
+      }
       const flying = player.toggleFly();
-      hud.hint(flying ? 'flying — Shift to boost, Space/Ctrl up-down' : 'back on the ground');
+      hud.hint(t(flying ? 'hint.flyOn' : 'hint.flyOff'));
       break;
     }
     // Places and street names share one key; the per-category toggles were more
@@ -207,16 +299,17 @@ addEventListener('keydown', (e) => {
       const on = !(pois.showPois && pois.showStreets);
       pois.showPois = on;
       pois.showStreets = on;
-      hud.hint(on ? 'labels on' : 'labels off');
+      hud.hint(t(on ? 'hint.labelsOn' : 'hint.labelsOff'));
       break;
     }
     case 'KeyM':
       hud.cycleZoom();
       break;
     case 'KeyL':
-      hud.hint(layerPanel.toggle() ? 'data layers shown' : 'data layers hidden');
+      hud.hint(t(layerPanel.toggle() ? 'hint.layersOn' : 'hint.layersOff'));
       break;
     case 'KeyX':
+      if (game) { hud.hint(t('hint.pEnds')); break; }
       void world.ensure(sx, sz).then(() => {
         player.setMode('foot');
         player.spawn(sx, sz);
@@ -224,14 +317,14 @@ addEventListener('keydown', (e) => {
           player.yaw = world.spawnPoint.heading;
           player.heading = world.spawnPoint.heading;
         }
-        hud.hint('back at the start');
+        hud.hint(t('hint.respawn'));
       });
       break;
     case 'KeyG': {
       // shadows are the single most expensive thing in the frame
       shadowsWanted = !shadowsWanted;
       applyShadows();
-      hud.hint(shadowsWanted ? 'shadows on' : 'shadows off');
+      hud.hint(t(shadowsWanted ? 'hint.shadowsOn' : 'hint.shadowsOff'));
       break;
     }
     default:
@@ -241,8 +334,14 @@ addEventListener('keydown', (e) => {
 addEventListener('keyup', (e) => keys.delete(e.code));
 addEventListener('blur', () => keys.clear());
 
+/** Capture the mouse; refused in some contexts (headless, iframes), which is fine. */
+function lockPointer(): void {
+  try {
+    void (renderer.domElement.requestPointerLock() as unknown as Promise<void> | undefined)?.catch?.(() => {});
+  } catch { /* keyboard still works */ }
+}
 renderer.domElement.addEventListener('click', () => {
-  if (!pointerLocked) renderer.domElement.requestPointerLock();
+  if (!pointerLocked) lockPointer();
 });
 
 goInput.addEventListener('keydown', async (e) => {
@@ -250,7 +349,7 @@ goInput.addEventListener('keydown', async (e) => {
   if (e.key !== 'Enter') return;
   const q = goInput.value.trim();
   if (!q) return;
-  hud.hint(`looking up "${q}"…`, 6);
+  hud.hint(t('search.looking', { q }), 6);
   const msg = await locator.goTo(q);
   hud.hint(msg, 4.5);
   goInput.blur();
@@ -261,7 +360,7 @@ document.getElementById('goShare')!.addEventListener('click', async () => {
   const url = locator.shareUrl();
   try {
     await navigator.clipboard.writeText(url);
-    hud.hint('link to this spot copied', 2.6);
+    hud.hint(t('hint.linkCopied'), 2.6);
   } catch {
     hud.hint(url, 6);
   }
@@ -269,16 +368,33 @@ document.getElementById('goShare')!.addEventListener('click', async () => {
 document.addEventListener('pointerlockchange', () => {
   pointerLocked = document.pointerLockElement === renderer.domElement;
 });
-addEventListener('mousemove', (e) => {
-  if (!pointerLocked) return;
-  player.yaw -= e.movementX * 0.0022;
+/** Turn the view by pixel deltas: the mouse, or a finger dragging. */
+function look(dx: number, dy: number): void {
+  player.yaw -= dx * 0.0022;
   if (!player.inCar || player.camMode === 2) {
-    player.pitch -= e.movementY * 0.0019;
+    player.pitch -= dy * 0.0019;
   } else {
-    player.pitch -= e.movementY * 0.0009;
+    player.pitch -= dy * 0.0009;
   }
   player.pitch = Math.max(-1.3, Math.min(1.15, player.pitch));
+}
+addEventListener('mousemove', (e) => {
+  if (pointerLocked) look(e.movementX, e.movementY);
 });
+
+const MOVES = ['foot', 'bike', 'scooter', 'car'] as const;
+const touch = touchDevice ? new TouchControls(look, [
+  { label: '⏸', code: 'KeyP' },
+  { label: '🎥', code: 'KeyC' },
+  // the next way of getting around this game allows
+  { label: '🚲', code: () => {
+    const allowed = MOVES.filter((m) => !game || game.allows(m));
+    const next = allowed[(allowed.indexOf(player.mode as typeof MOVES[number]) + 1) % allowed.length];
+    return `Digit${MOVES.indexOf(next) + 1}`;
+  } },
+  { label: '⤒', code: 'Space' },
+]) : null;
+let touchShown = true;
 
 /**
  * Keep the drawing buffer matched to the window.
@@ -307,11 +423,8 @@ function fitToWindow(): void {
 addEventListener('resize', fitToWindow);
 fitToWindow();
 
-playBtn.addEventListener('click', () => {
-  boot.style.display = 'none';
-  renderer.domElement.requestPointerLock();
-  hud.hint('click to look around · F for a car', 3.2);
-});
+menu.ready();
+void boot;
 
 /* --- avatar and car ------------------------------------------------------ */
 
@@ -356,6 +469,11 @@ const car = new THREE.Group();
 car.traverse((c) => { if ((c as THREE.Mesh).isMesh) c.castShadow = true; });
 scene.add(car);
 
+const sleigh = makeSleigh();
+sleigh.visible = false;
+sleigh.rotation.order = 'YXZ';
+scene.add(sleigh);
+
 /* --- frame loop ---------------------------------------------------------- */
 
 let nightMix = 0;
@@ -373,22 +491,35 @@ function frame(now: number): void {
 
   world.update(player.pos.x, player.pos.z);
   const wasFlying = player.flying;
-  player.update(dt, keys);
-  if (player.flying !== wasFlying) {
-    hud.hint(player.flying
-      ? 'airborne — look down and fly into the ground to land'
-      : 'landed');
+  // the menu pauses play, and nobody moves before the countdown says go
+  if (!menu.open && game?.state !== 'countdown') player.update(dt, keys);
+  if (touch && touchShown === menu.open) {
+    touchShown = !menu.open;
+    touch.visible = touchShown;
+  }
+  if (game && !menu.open) {
+    game.update(dt);
+    if (game.state === 'over') endGame(false);
+  }
+  if (player.flying !== wasFlying && !player.sleigh) {
+    hud.hint(t(player.flying ? 'hint.airborne' : 'hint.landed'));
   }
   pois.update(player.pos.x, player.pos.z);
   const head = player.applyCamera(camera);
 
   // --- character, vehicle and pose -------------------------------------
   const firstPerson = player.camMode === 2;
-  const show = !player.flying && !firstPerson;
+  const show = !player.flying && !firstPerson && !player.sleigh;
   avatar.visible = show;
   bike.visible = show && player.mode === 'bike';
   scooter.visible = show && player.mode === 'scooter';
-  car.visible = !player.flying && player.mode === 'car';
+  car.visible = !player.flying && !player.sleigh && player.mode === 'car';
+  sleigh.visible = player.sleigh;
+  if (player.sleigh) {
+    sleigh.position.copy(player.pos);
+    sleigh.rotation.set(-player.pitch * 0.6, player.yaw + Math.PI, player.lean);
+    poseSleigh(sleigh, acc);
+  }
 
   // meshes are modelled facing +Z; travel is along -Z, hence the half turn
   const facing = player.heading + Math.PI;
@@ -469,4 +600,4 @@ requestAnimationFrame(frame);
 
 // expose for quick console poking during development
 (window as unknown as { __berlin: object }).__berlin =
-  { world, player, camera, renderer, scene, hud, locator, pois };
+  { world, player, camera, renderer, scene, hud, locator, pois, menu, game: () => game };

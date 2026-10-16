@@ -44,6 +44,14 @@ export const MODES: Record<Mode, ModeConfig> = {
   car:     { label: 'driving',   cruise: 46.0, sprint: 46.0, nav: 'drive', stride: 4.0,  eye: 1.15 },
 };
 
+// the sleigh, metres per second and metres above the ground
+const SLEIGH_SLOW = 22;
+const SLEIGH_CRUISE = 40;
+const SLEIGH_FAST = 65;
+const SLEIGH_BOOST = 110;
+const SLEIGH_FLOOR = 6;
+const SLEIGH_CEILING = 450;
+
 const CAR_ACCEL = 13.0;
 const CAR_BRAKE = 22.0;
 const CAR_REVERSE = -11.0;
@@ -71,6 +79,13 @@ export class Player {
   lean = 0;
   takeoffCooldown = 0;
   justLanded = 0;
+  /** Game modes: scales every top speed (Döner power, a full bladder). */
+  speedScale = 1;
+  /** Game modes that are played on the ground switch flight off. */
+  canFly = true;
+  /** Santa's sleigh: always airborne, always moving forward. */
+  sleigh = false;
+  sleighSpeed = 0;
 
   constructor(world: World) {
     this.world = world;
@@ -83,6 +98,7 @@ export class Player {
   get driving() { return this.cfg.nav === 'drive'; }
 
   get speedKmh() {
+    if (this.sleigh) return this.sleighSpeed * 3.6;
     return this.vehicle
       ? Math.abs(this.speed) * 3.6
       : Math.hypot(this.vel.x, this.vel.z) * 3.6;
@@ -162,6 +178,7 @@ export class Player {
     if (this.takeoffCooldown > 0) this.takeoffCooldown -= dt;
     if (this.justLanded > 0) this.justLanded -= dt;
     this.pitchInput(keys, dt);
+    if (this.sleigh) return this.updateSleigh(dt, keys);
     if (this.flying) return this.updateFly(dt, keys);
     if (this.vehicle) return this.updateVehicle(dt, keys);
     return this.updateFoot(dt, keys);
@@ -173,7 +190,7 @@ export class Player {
     this.yaw += this.turnInput(keys) * TURN_RATE * dt;
 
     // look to the sky and lean into it: take off
-    if (this.pitch > TAKEOFF_PITCH && keys.has('KeyW') && this.takeoffCooldown <= 0) {
+    if (this.canFly && this.pitch > TAKEOFF_PITCH && keys.has('KeyW') && this.takeoffCooldown <= 0) {
       this.flying = true;
       this.launched = true;
       this.vel.set(0, TAKEOFF_LIFT, 0);
@@ -187,8 +204,8 @@ export class Player {
     if (keys.has('KeyA')) fx -= 1;
     if (keys.has('KeyD')) fx += 1;
     const len = Math.hypot(fx, fz);
-    const speed = (keys.has('ShiftLeft') || keys.has('ShiftRight'))
-      ? cfg.sprint : cfg.cruise;
+    const speed = ((keys.has('ShiftLeft') || keys.has('ShiftRight'))
+      ? cfg.sprint : cfg.cruise) * this.speedScale;
 
     let vx = 0, vz = 0;
     if (len > 0) {
@@ -229,8 +246,8 @@ export class Player {
     const accel = car ? CAR_ACCEL : RIDE_ACCEL;
     const brake = car ? CAR_BRAKE : RIDE_BRAKE;
     const drag = car ? CAR_DRAG * 12 : RIDE_DRAG * 3;
-    const top = (keys.has('ShiftLeft') || keys.has('ShiftRight'))
-      ? cfg.sprint : cfg.cruise;
+    const top = ((keys.has('ShiftLeft') || keys.has('ShiftRight'))
+      ? cfg.sprint : cfg.cruise) * this.speedScale;
     const reverse = car ? CAR_REVERSE : -3.0;
 
     const throttle = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0);
@@ -299,6 +316,54 @@ export class Player {
     }
   }
 
+  /**
+   * The sleigh flies like a plane: it never stops, W and S trim the speed,
+   * A/D (or Q/E, or the mouse) bank it round and the view's pitch is its
+   * climb. It skims over the ground rather than landing.
+   */
+  private updateSleigh(dt: number, keys: Set<string>): void {
+    const boost = keys.has('ShiftLeft') || keys.has('ShiftRight');
+    const want = boost ? SLEIGH_BOOST : keys.has('KeyW') ? SLEIGH_FAST
+      : keys.has('KeyS') ? SLEIGH_SLOW : SLEIGH_CRUISE;
+    this.sleighSpeed += (want - this.sleighSpeed) * Math.min(1, dt * 1.6);
+    const steer = (keys.has('KeyA') ? 1 : 0) - (keys.has('KeyD') ? 1 : 0) + this.turnInput(keys);
+    this.yaw += Math.max(-1, Math.min(1, steer)) * 1.25 * dt;
+    this.lean += (-steer * 0.45 - this.lean) * Math.min(1, dt * 4);
+    if (keys.has('Space')) this.pitch = Math.min(0.7, this.pitch + 0.9 * dt);
+    if (keys.has('ControlLeft')) this.pitch = Math.max(-0.7, this.pitch - 0.9 * dt);
+    this.pitch = Math.max(-0.7, Math.min(0.7, this.pitch));
+    const cp = Math.cos(this.pitch);
+    const v = this.sleighSpeed * dt;
+    this.pos.x += -Math.sin(this.yaw) * cp * v;
+    this.pos.z += -Math.cos(this.yaw) * cp * v;
+    this.pos.y += Math.sin(this.pitch) * v;
+    const g = this.world.height(this.pos.x, this.pos.z);
+    if (this.pos.y < g + SLEIGH_FLOOR) {
+      // skim off the ground and nose up a little
+      this.pos.y = g + SLEIGH_FLOOR;
+      if (this.pitch < 0.05) this.pitch += (0.05 - this.pitch) * Math.min(1, dt * 3);
+    }
+    this.pos.y = Math.min(this.pos.y, g + SLEIGH_CEILING);
+    this.heading = this.yaw;
+    this.strideDist += v;
+    this.vel.set(0, 0, 0);
+  }
+
+  /** Board the sleigh at a safe height, or step off it. */
+  setSleigh(on: boolean): void {
+    this.sleigh = on;
+    this.flying = false;
+    if (on) {
+      this.mode = 'foot';
+      this.sleighSpeed = SLEIGH_CRUISE;
+      this.pitch = 0.05;
+      this.pos.y = Math.max(this.pos.y, this.world.height(this.pos.x, this.pos.z) + 60);
+    } else {
+      this.lean = 0;
+      this.settle(200);
+    }
+  }
+
   /** Put the player back on their feet wherever they came down. */
   land(): void {
     this.flying = false;
@@ -313,6 +378,7 @@ export class Player {
   }
 
   toggleFly(): boolean {
+    if (!this.canFly && !this.flying) return false;
     this.flying = !this.flying;
     if (this.flying) {
       this.launched = false;
@@ -342,6 +408,16 @@ export class Player {
   }
 
   applyCamera(cam: THREE.PerspectiveCamera): THREE.Vector3 {
+    if (this.sleigh) {
+      // a chase camera behind and above the reindeer
+      const s = Math.sin(this.yaw), c = Math.cos(this.yaw);
+      const at = new THREE.Vector3(this.pos.x - s * 6, this.pos.y + 2, this.pos.z - c * 6);
+      const back = this.camMode === 1 ? 11 : 17;
+      cam.position.set(this.pos.x + s * back, this.pos.y + 5.5 - Math.sin(this.pitch) * back,
+                       this.pos.z + c * back);
+      cam.lookAt(at);
+      return at;
+    }
     if (this.flying) {
       cam.position.set(this.pos.x, this.pos.y, this.pos.z);
       cam.rotation.set(0, 0, 0);

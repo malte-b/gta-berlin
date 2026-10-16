@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="de">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
-<title>Berlin — The Game</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+<title>Berlin — Das Spiel</title>
 <style>
   :root { --ui: #e8e6e1; --dim: #9a978f; --accent: #ffb454; }
   * { box-sizing: border-box; }
@@ -41,8 +41,98 @@
     color: var(--dim); text-align: center; max-width: 60ch; }
   #credits a { color: var(--dim); }
   #boot { position: fixed; inset: 0; display: grid; place-items: center; z-index: 20;
+    overflow-y: auto; padding: 24px 0;
     background: radial-gradient(120% 90% at 50% 0%, #1b2030 0%, #0d0f14 70%); }
-  #boot .inner { text-align: center; max-width: 460px; padding: 0 24px; }
+  /* once the city has loaded, the menu sits over it */
+  #boot.over { background: rgba(10,12,17,.78); backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px); }
+  #boot .inner { text-align: center; width: 100%; max-width: 880px; padding: 0 16px; }
+  #loading { max-width: 420px; margin: 0 auto; }
+  #boot.ready #loading { display: none; }
+  #menu { display: none; margin-top: 8px; }
+  #boot.ready #menu { display: block; }
+  #modes { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px;
+    text-align: left; }
+  .mode { pointer-events: auto; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.12);
+    border-radius: 10px; padding: 12px 14px; color: var(--ui); font: inherit; cursor: pointer;
+    text-align: left; display: flex; flex-direction: column; gap: 5px; transition: border-color .15s, transform .15s; }
+  .mode:hover, .mode:focus-visible { border-color: var(--accent); transform: translateY(-2px); outline: none; }
+  .mode .mt { font-size: 14px; font-weight: 600; letter-spacing: .03em; }
+  .mode .me { font-size: 26px; line-height: 1; }
+  .mode .mb { font-size: 11px; line-height: 1.5; color: #c9c6bf; }
+  .mode .ms { font-size: 9.5px; color: var(--dim); margin-top: auto; }
+  .mode .best { color: var(--accent); font-size: 10.5px; }
+  .mode.free { border-color: rgba(255,180,84,.5); }
+  #result { display: none; margin: 0 auto 18px; max-width: 520px; }
+  #result.on { display: block; }
+  #result h3 { font-size: 22px; margin: 0 0 6px; letter-spacing: .06em; font-weight: 600; }
+  #result .big { font-size: 46px; color: var(--accent); font-weight: 600; line-height: 1.1; }
+  #result p { font-size: 11.5px; color: #c9c6bf; margin: 4px 0; }
+  #result p.src { font-size: 9.5px; color: var(--dim); }
+  #result .rb { display: flex; gap: 8px; justify-content: center; margin-top: 12px; flex-wrap: wrap; }
+  .rb button { pointer-events: auto; background: var(--accent); color: #14161c; border: 0; border-radius: 6px;
+    padding: 9px 18px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; letter-spacing: .06em; }
+  .rb button.alt { background: rgba(255,255,255,.1); color: var(--ui); }
+  #lang { position: absolute; top: 14px; right: 16px; display: flex; gap: 4px; }
+  #lang button { pointer-events: auto; background: rgba(255,255,255,.06); color: var(--dim);
+    border: 1px solid rgba(255,255,255,.14); border-radius: 5px; font: inherit; font-size: 11px;
+    padding: 4px 9px; cursor: pointer; letter-spacing: .08em; }
+  #lang button.on { color: #14161c; background: var(--accent); border-color: var(--accent); }
+  #menunote { font-size: 10px; color: var(--dim); margin-top: 14px; }
+  #game { top: 62px; left: 50%; transform: translateX(-50%); min-width: 260px; max-width: calc(100vw - 32px);
+    text-align: center; display: none; font-size: 12px; }
+  #game.on { display: block; }
+  #game .gt { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+  #gTitle { font-size: 11px; letter-spacing: .06em; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #gTime { font-size: 22px; font-variant-numeric: tabular-nums; font-weight: 600; }
+  #gTime.low { color: #ff6b5b; animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity: .45; } }
+  #gScore b { color: var(--accent); font-size: 15px; }
+  #gMeter { position: relative; height: 16px; border-radius: 8px; background: rgba(255,255,255,.1);
+    overflow: hidden; margin: 6px 0 4px; }
+  #gMeter div { position: absolute; inset: 0 auto 0 0; width: 0; transition: width .2s, background .4s; }
+  #gMeter span { position: relative; font-size: 10px; line-height: 16px; text-shadow: 0 1px 2px #000; }
+  #gCompass { display: flex; align-items: center; justify-content: center; gap: 7px; color: #c9c6bf; font-size: 11px; }
+  #gArrow { display: inline-block; color: var(--accent); font-size: 16px; transition: transform .08s linear; }
+  #gTarget { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #banner { position: fixed; left: 50%; top: 34%; transform: translate(-50%, -8px); z-index: 6; pointer-events: none;
+    font-size: 17px; font-weight: 600; letter-spacing: .03em; background: rgba(14,16,21,.82); padding: 10px 20px;
+    border-radius: 10px; border: 1px solid rgba(255,180,84,.45); opacity: 0; transition: opacity .25s, transform .25s;
+    max-width: calc(100vw - 32px); text-align: center; }
+  #banner.on { opacity: 1; transform: translate(-50%, 0); }
+  #count { position: fixed; left: 50%; top: 42%; transform: translate(-50%, -50%) scale(.6); z-index: 7;
+    pointer-events: none; font-size: 110px; font-weight: 700; color: var(--accent); opacity: 0;
+    text-shadow: 0 4px 24px rgba(0,0,0,.6); transition: opacity .2s, transform .3s; }
+  #count.on { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  #heat { position: fixed; inset: 0; pointer-events: none; z-index: 4; opacity: 0; transition: opacity .5s;
+    background: radial-gradient(ellipse at center, rgba(255,140,0,0) 40%, rgba(255,90,20,.55) 100%); }
+  /* a game shows only what the game needs: its panel, the map and the speed */
+  body.gaming #stats, body.gaming #keys, body.gaming #layers, body.gaming #go,
+  body.gaming #place { display: none; }
+  body.gaming #game { top: 12px; }
+  /* touch: joystick on the left half, look on the right, buttons bottom right */
+  #touch { position: fixed; inset: 0; z-index: 3; }
+  body:not(.touch) #touch { display: none !important; }
+  #touchMove { position: absolute; left: 0; bottom: 0; width: 50%; height: 70%; touch-action: none; }
+  #touchLook { position: absolute; right: 0; top: 0; width: 50%; height: 100%; touch-action: none; }
+  #touchButtons { position: absolute; right: max(16px, env(safe-area-inset-right)); bottom: calc(max(4px, env(safe-area-inset-bottom)) + 30px);
+    display: grid; grid-template-columns: repeat(2, 56px); gap: 10px; }
+  #touchButtons button { width: 56px; height: 56px; border-radius: 50%; border: 1px solid rgba(255,255,255,.2);
+    background: rgba(14,16,21,.55); color: var(--ui); font-size: 22px; touch-action: none;
+    -webkit-tap-highlight-color: transparent; user-select: none; -webkit-user-select: none;
+    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+  #touchButtons button:active { background: rgba(255,180,84,.5); }
+  body.touch #keys, body.touch #stats, body.touch #layers, body.touch #go, body.touch #speed { display: none; }
+  body.touch #place, body.touch #maplabel { display: none; }
+  body.touch #map { width: 110px; height: 110px; }
+  body.touch #game { left: 12px; transform: none; min-width: 0; width: calc(100vw - 160px); max-width: 360px; }
+  body.touch { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  body.touch #credits { font-size: 8px; max-width: none; white-space: nowrap; padding: 3px 8px;
+    bottom: max(4px, env(safe-area-inset-bottom)); opacity: .75; }
+  @media (max-width: 640px) {
+    #keys, #stats, #layers { display: none; }
+    #game { top: 54px; }
+    #banner { font-size: 14px; }
+  }
   #boot h1 { font-size: 30px; margin: 0 0 4px; letter-spacing: .16em; font-weight: 500; }
   #boot h2 { font-size: 11px; margin: 0 0 26px; color: var(--dim); font-weight: 400;
     letter-spacing: .22em; text-transform: uppercase; }
@@ -82,42 +172,51 @@
   <div class="panel" id="stats"></div>
   <div class="panel" id="mapwrap"><canvas id="map" width="190" height="190"></canvas>
     <div id="maplabel">M — ZOOM</div></div>
-  <div class="panel" id="keys">
-    <kbd>W A S D</kbd> move · <kbd>Q</kbd> <kbd>E</kbd> turn · <kbd>R</kbd> <kbd>F</kbd> tilt<br>
-    <kbd>Shift</kbd> sprint · <kbd>Space</kbd> jump<br>
-    look up and walk forward to fly · fly into the ground to land<br>
-    <kbd>1</kbd> foot · <kbd>2</kbd> bike · <kbd>3</kbd> scooter · <kbd>4</kbd> car<br>
-    <kbd>H</kbd> fly · <kbd>C</kbd> camera · <kbd>N</kbd> night · <kbd>T</kbd> labels<br>
-    <kbd>G</kbd> shadows · <kbd>M</kbd> map zoom · <kbd>X</kbd> respawn<br>
-    <kbd>L</kbd> data layers · <kbd>/</kbd> search · <kbd>Esc</kbd> release mouse
-  </div>
+  <div class="panel" id="keys" data-i18n-html="keys.help"></div>
   <div class="panel" id="layers">
-    <h3><span>Data layers</span><span><kbd>L</kbd></span></h3>
+    <h3><span data-i18n="layers.title">Datenebenen</span><span><kbd>L</kbd></span></h3>
     <div id="layerbody">
       <div id="layerlist"></div>
-      <button id="layeradd">+ add GeoJSON or CSV (or drop a file)</button>
+      <button id="layeradd" data-i18n="layers.add"></button>
       <input id="layerfile" type="file" accept=".geojson,.json,.csv,.tsv,.txt" multiple hidden>
-      <div id="layernote">Files are read in this browser and not uploaded anywhere.
-        Points need lat/lon or EPSG:25833.</div>
+      <div id="layernote" data-i18n="layers.note"></div>
     </div>
+  </div>
+  <div class="panel" id="game">
+    <div class="gt"><span id="gTitle"></span><span id="gTime">5:00</span></div>
+    <div id="gScore"></div>
+    <div id="gMeter"><div></div><span></span></div>
+    <div id="gCompass"><span id="gArrow">▲</span><span id="gTarget"></span></div>
   </div>
   <div class="panel" id="speed">0<span> KM/H</span></div>
   <div class="panel" id="go">
-    <input id="goInput" type="text" placeholder="address or place…" autocomplete="off" spellcheck="false">
-    <button id="goShare" title="copy a link to this spot">link</button>
+    <input id="goInput" type="text" data-i18n-placeholder="search.placeholder" autocomplete="off" spellcheck="false">
+    <button id="goShare" data-i18n-title="search.linkTitle" data-i18n="search.link"></button>
   </div>
-  <div class="panel" id="credits">
-    Buildings, streets © OpenStreetMap contributors (ODbL), modelled by OSM2World ·
-    terrain: ALS Berlin · photos: TrueDOP 2024 · trees: Baumbestand Berlin (dl-de/zero-2.0)
-  </div>
+  <div class="panel" id="credits" data-i18n="credits"></div>
+</div>
+<div id="touch" style="display:none">
+  <div id="touchMove"></div>
+  <div id="touchLook"></div>
+  <div id="touchButtons"></div>
 </div>
 <div id="hint"></div>
 <div id="boot"><div class="inner">
-  <h1>BERLIN</h1><h2>built from open geodata</h2>
-  <div id="bar"><div></div></div>
-  <div id="bootmsg">starting…</div>
-  <button id="play" disabled>Drop in</button>
+  <div id="lang"><button data-lang="de">DE</button><button data-lang="en">EN</button></div>
+  <h1>BERLIN</h1><h2 data-i18n="boot.sub">aus offenen Geodaten gebaut</h2>
+  <div id="loading">
+    <div id="bar"><div></div></div>
+    <div id="bootmsg">starte…</div>
+  </div>
+  <div id="menu">
+    <div id="result"></div>
+    <div id="modes"></div>
+    <div id="menunote" data-i18n-html="menu.note"></div>
+  </div>
 </div></div>
+<div id="heat"></div>
+<div id="banner"></div>
+<div id="count"></div>
 <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

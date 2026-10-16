@@ -119,6 +119,8 @@ export class PoiLayer {
   private readonly sets = new Map<string, PoiData>();
   showPois = true;
   showStreets = true;
+  /** A game is on: data layers and place labels make way for its targets. */
+  quiet = false;
   readonly enabled = new Set<string>(Object.keys(CATEGORY_STYLE));
   readonly group = new THREE.Group();
   readonly streetGroup = new THREE.Group();
@@ -147,6 +149,7 @@ export class PoiLayer {
 
   /** Visible data points within r of (x, z), for the minimap. */
   *dataNear(x: number, z: number, r: number): Generator<[PointLayer, number, number]> {
+    if (this.quiet) return;
     for (const l of this.layers.values()) {
       if (!l.on) continue;
       for (const p of l.points) {
@@ -379,7 +382,8 @@ export class PoiLayer {
   /** Mount what is near, unmount what is not. Called every frame; cheap. */
   update(x: number, z: number): void {
     this.updateData(x, z);
-    this.group.visible = this.showPois;
+    this.dataGroup.visible = !this.quiet;
+    this.group.visible = this.showPois && !this.quiet;
     this.streetGroup.visible = this.showStreets;
 
     if (this.showPois) {

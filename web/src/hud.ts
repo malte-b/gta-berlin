@@ -1,5 +1,6 @@
 import { makeFromWorld, type XZ } from './geo';
-import { MODES, type Player } from './player';
+import type { Player } from './player';
+import { onLang, t } from './i18n';
 import type { PoiLayer } from './pois';
 import type { World } from './world';
 
@@ -24,6 +25,8 @@ function el<T extends HTMLElement = HTMLElement>(id: string): T {
 export class HUD {
   readonly world: World;
   pois: PoiLayer | null = null;
+  /** A game's targets, drawn on the minimap as rings. */
+  marks: { x: number; z: number; colour: string }[] = [];
   area = 'Kreuzberg';
   private readonly canvas = el<HTMLCanvasElement>('map');
   private readonly ctx = this.canvas.getContext('2d')!;
@@ -41,10 +44,11 @@ export class HUD {
     this.fromWorld = makeFromWorld(world.origin);
     if (world.tiled) this.area = 'Berlin';
     this.updateLabel();
+    onLang(() => this.updateLabel());
   }
 
   private updateLabel(): void {
-    el('maplabel').textContent = `M — ${this.spans[this.zoom]} M`;
+    el('maplabel').textContent = t('hud.zoom', { n: this.spans[this.zoom] });
   }
 
   cycleZoom(): void {
@@ -90,6 +94,21 @@ export class HUD {
       }
     }
 
+    // game targets; those off the map sit on its edge, pointing the way
+    for (const m of this.marks) {
+      let mx = (m.x - px) * scale, mz = (m.z - pz) * scale;
+      const edge = size / 2 - 6;
+      const k = Math.max(Math.abs(mx), Math.abs(mz)) / edge;
+      if (k > 1) { mx /= k; mz /= k; }
+      ctx.beginPath();
+      ctx.arc(size / 2 + mx, size / 2 + mz, k > 1 ? 3 : 5, 0, Math.PI * 2);
+      ctx.fillStyle = m.colour;
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = '#fff';
+      ctx.stroke();
+    }
+
     ctx.translate(size / 2, size / 2);
     // the camera looks along (-sin yaw, -cos yaw); north (-z) is up on the map
     ctx.rotate(-player.yaw);
@@ -115,12 +134,12 @@ export class HUD {
     this.speedEl.innerHTML = `${Math.round(player.speedKmh)}<span> KM/H</span>`;
 
     const s = this.world.stats;
-    const mode = player.flying ? 'flying' : MODES[player.mode].label;
+    const mode = t(player.sleigh ? 'move.sleigh' : player.flying ? 'move.flying' : `move.${player.mode}`);
     this.statsEl.innerHTML =
-      `<b>${fps.toFixed(0)}</b> fps · <b>${info.calls}</b> draws · `
-      + `<b>${(info.triangles / 1e6).toFixed(2)}</b> M tris`
-      + `<br><b>${s.buildings}</b> buildings · <b>${s.trees}</b> trees`
-      + (this.world.tiled ? ` · <b>${s.full}</b>/<b>${s.tiles}</b> tiles` : '')
+      `<b>${fps.toFixed(0)}</b> ${t('hud.fps')} · <b>${info.calls}</b> ${t('hud.draws')} · `
+      + `<b>${(info.triangles / 1e6).toFixed(2)}</b> ${t('hud.tris')}`
+      + `<br><b>${s.buildings}</b> ${t('hud.buildings')} · <b>${s.trees}</b> ${t('hud.trees')}`
+      + (this.world.tiled ? ` · <b>${s.full}</b>/<b>${s.tiles}</b> ${t('hud.tiles')}` : '')
       + `<br>x <b>${px.toFixed(0)}</b>  z <b>${pz.toFixed(0)}</b>  alt <b>${player.pos.y.toFixed(1)}</b> m`
       + `<br>${mode}`;
 

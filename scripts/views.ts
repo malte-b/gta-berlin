@@ -96,10 +96,10 @@ await send('Runtime.enable');
 await send('Page.enable');
 await send('Page.navigate', { url });
 for (let i = 0; i < 300; i++) {
-  if (await ev("!!(window.__berlin && !document.getElementById('play')?.disabled)")) break;
+  if (await ev("!!(window.__berlin && document.getElementById('boot')?.classList.contains('ready'))")) break;
   await sleep(200);
 }
-await ev("(() => { document.getElementById('play').click(); window.__berlin.player.land = () => {}; return 1; })()");
+await ev("(() => { document.querySelector('#modes .mode.free').click(); window.__berlin.player.land = () => {}; return 1; })()");
 
 const done: { v: View; file: string }[] = [];
 for (const v of views) {

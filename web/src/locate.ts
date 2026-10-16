@@ -1,5 +1,6 @@
 import { makeFromWorld, utm33, type XZ } from './geo';
 import type { HUD } from './hud';
+import { t } from './i18n';
 import type { Player } from './player';
 import type { World } from './world';
 
@@ -127,10 +128,10 @@ export class Locator {
     try {
       hits = await this.geocode(query);
     } catch (err) {
-      return `lookup failed: ${(err as Error).message}`;
+      return t('search.failed', { e: (err as Error).message });
     }
-    if (!hits) return 'still looking up the last one';
-    if (!hits.length) return `no match for "${query}"`;
+    if (!hits) return t('search.busy');
+    if (!hits.length) return t('search.none', { q: query });
 
     for (const hit of hits) {
       const [x, z] = this.toWorld(hit.lon, hit.lat);
@@ -144,6 +145,6 @@ export class Locator {
     const first = hits[0];
     const [x, z] = this.toWorld(first.lon, first.lat);
     const d = Math.hypot(x - this.player.pos.x, z - this.player.pos.z);
-    return `${first.name.split(',')[0]} is outside the downloaded tiles (~${Math.round(d)} m away)`;
+    return t('search.outside', { name: first.name.split(',')[0], d: Math.round(d) });
   }
 }

@@ -162,3 +162,4 @@ vite.config.ts.timestamp-*
 !/web/public/data/ground/
 !/web/public/data/ortho/
 !/web/public/data/layers/
+!/web/public/data/games/

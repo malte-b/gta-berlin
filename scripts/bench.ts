@@ -75,7 +75,7 @@ if (phone) {
 const t0 = Date.now();
 await send('Page.navigate', { url });
 for (let i = 0; i < 300; i++) {
-  if (await ev("!!(window.__berlin && !document.getElementById('play')?.disabled)")) break;
+  if (await ev("!!(window.__berlin && document.getElementById('boot')?.classList.contains('ready'))")) break;
   await sleep(200);
 }
 interface Memory { textureMB: number; textureSlotsMB: number; geometryMB: number; heapMB: number; world: unknown }
@@ -91,7 +91,7 @@ const results: Record<string, unknown> & { street?: Scene; fly?: Scene; air?: Sc
 
 // time every render and keep its draw calls and triangles
 await ev(`(() => {
-  document.getElementById('play').click();
+  document.querySelector('#modes .mode.free').click();
   const b = window.__berlin, r = b.renderer;
   window.__frames = [];
   const render = r.render.bind(r);

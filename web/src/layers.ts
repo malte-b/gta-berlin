@@ -1,4 +1,5 @@
 import { utm33, type Origin } from './geo';
+import { t } from './i18n';
 
 /**
  * Point layers: datasets shown as labelled markers in the city.
@@ -69,11 +70,11 @@ export async function parseUpload(file: File, origin: Origin):
   const base = file.name.replace(/\.[^.]+$/, '');
   const csv = /\.(csv|tsv|txt)$/i.test(file.name);
   const all = csv ? fromCsv(text, origin, base) : fromGeoJson(text, origin, base);
-  if (!all.length) throw new Error('no usable points');
+  if (!all.length) throw new Error(t('err.noPoints'));
   // a wrong guess about columns or coordinate system lands points far away
   const points = all.filter((p) => Math.hypot(p.x, p.z) < REACH);
   if (!points.length) {
-    throw new Error(`none of its ${all.length} points is near Berlin - check the coordinate columns`);
+    throw new Error(t('err.farAway', { n: all.length }));
   }
   return {
     layer: {
@@ -119,11 +120,11 @@ function fromGeoJson(text: string, origin: Origin, fallback: string): LayerPoint
   try {
     doc = JSON.parse(text);
   } catch {
-    throw new Error('not valid JSON - expected GeoJSON or a .csv file');
+    throw new Error(t('err.json'));
   }
   const feats: Feature[] = doc.type === 'FeatureCollection' ? doc.features ?? []
     : doc.type === 'Feature' ? [doc as Feature] : [];
-  if (!feats.length) throw new Error('no features - expected a GeoJSON FeatureCollection');
+  if (!feats.length) throw new Error(t('err.noFeatures'));
   const named = doc.crs?.properties?.name ?? '';
   let crs: Crs | null = /25833/.test(named) ? 'utm33' : /3857|900913/.test(named) ? 'mercator' : null;
   const out: LayerPoint[] = [];
@@ -131,8 +132,7 @@ function fromGeoJson(text: string, origin: Origin, fallback: string): LayerPoint
     const p = centre(f.geometry);
     if (!p) continue;
     crs ??= guessCrs(p[0], p[1]);
-    if (!crs) throw new Error(`coordinates like ${p[0]}, ${p[1]} are in no system this reads`
-      + ' (WGS84, EPSG:25833, Web Mercator)');
+    if (!crs) throw new Error(t('err.crs', { x: p[0], y: p[1] }));
     const [x, z] = toWorld(p[0], p[1], crs, origin);
     const props = f.properties ?? {};
     out.push({ x, z, n: pick(props, LABEL_KEYS, true) || fallback, d: pick(props, DETAIL_KEYS, false) });
@@ -196,7 +196,7 @@ const NORTH = ['y', 'hochwert', 'northing', 'utm_y', 'y_25833'];
 
 function fromCsv(text: string, origin: Origin, fallback: string): LayerPoint[] {
   const lines = text.replace(/^﻿/, '').split(/\r?\n/).filter((l) => l.trim());
-  if (lines.length < 2) throw new Error('the CSV has no data rows');
+  if (lines.length < 2) throw new Error(t('err.csvEmpty'));
   const head = lines[0];
   const sep = [';', '\t', ','].reduce((a, b) => (count(head, b) > count(head, a) ? b : a), ',');
   const cols = splitRow(head, sep).map((c) => c.trim().toLowerCase());
@@ -209,7 +209,7 @@ function fromCsv(text: string, origin: Origin, fallback: string): LayerPoint[] {
     crs = 'utm33';
   }
   if (ix < 0 || iy < 0) {
-    throw new Error('no coordinate columns: need lat/lon (WGS84) or x/y (EPSG:25833)');
+    throw new Error(t('err.csvCols'));
   }
   const num = (s: string) => Number(s.trim().replace(/^"|"$/g, '').replace(',', '.'));
   const out: LayerPoint[] = [];

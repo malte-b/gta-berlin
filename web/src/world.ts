@@ -3,6 +3,7 @@ import type { Origin, XZ } from './geo';
 import type { DeckHit } from './bridges';
 import { setUploader } from './frames';
 import { NavGrid } from './tiles';
+import { t } from './i18n';
 import { Tile, type GroundKind, type SharedGround, type TileManifest } from './tile';
 
 const DATA = 'data/';
@@ -104,7 +105,7 @@ export class World {
     this.aniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
     setUploader((t) => renderer.initTexture(t));
 
-    onProgress('ground textures');
+    onProgress(t('boot.textures'));
     this.shared = await this.loadShared();
 
     if (this.tiled) {
@@ -159,7 +160,7 @@ export class World {
     while (this.busy) await new Promise((r) => setTimeout(r, 30));
     this.busy = true;
     try {
-      onProgress?.(`loading ${tile.key === 'area' ? 'the city' : 'tile ' + tile.key}`);
+      onProgress?.(tile.key === 'area' ? t('boot.city') : t('boot.tile', { k: tile.key }));
       await this.raise(tile, 'full');
     } finally {
       this.busy = false;

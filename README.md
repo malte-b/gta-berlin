@@ -45,6 +45,13 @@ with the steps below and commit the result.
 | `G` | shadows on / off |
 | `T` | labels · `L` data layers · `M` minimap zoom · `X` respawn |
 | link | copies a URL pointing at exactly where you are standing |
+| `P` | game modes (and, during a game, give up) |
+
+On a phone or tablet (a coarse pointer) the keyboard help gives way to touch
+controls: a virtual joystick on the left half ([nipplejs](https://github.com/yoannmoinet/nipplejs);
+push it to the edge to sprint), drag on the right half to look, and buttons
+for the menu, camera, vehicle and jump. Shadows start off there; the frame
+budget is tighter.
 
 ---
 
@@ -182,6 +189,41 @@ python3 pipeline/build_layers.py      # bake the layers listed in pipeline/layer
   left out, which catches swapped columns.
 
 Only open, non-personal data belongs in a layer.
+
+### Game modes
+
+The start screen offers free roam or one of five timed games, each played on
+points from open data:
+
+| mode | goal | data |
+|---|---|---|
+| 🎅 Weihnachtsmarkt-Sause | fly Santa's sleigh over as many Christmas markets as possible in 90 s | Weihnachtsmärkte 2025 (SenWEB), as curated by ODIS for [weihnachtsmaerkte.odis-berlin.de](https://weihnachtsmaerkte.odis-berlin.de) |
+| 🥵 Hitzewelle | survive 90 s of heat: shade under cadastre trees slows it, running speeds it up, fountains, splash pools, cool rooms and bathing spots cool you down | Trinkwasserbrunnen, Zierbrunnen, Kühle Räume, Badestellen (gdi.berlin.de), OSM drinking water, in the spirit of the [Erfrischungskarte](https://erfrischungskarte.odis-berlin.de) |
+| 🌱 Gieß den Kiez | 90 s: fill your water bag at street pumps and water young trees; the younger, the thirstier | tree cadastre (trees under 15), OSM street pumps selected as in [Gieß den Kiez](https://www.giessdenkiez.de) |
+| 🚻 Klo-Notstand | 5 public toilets in 2 min; a full bladder slows you to a waddle | Öffentliche Toiletten |
+| 🥙 Döner-Marathon | as many kebab shops as possible in 60 s; each one is a speed boost and makes you heavier | OSM `cuisine=kebab` |
+
+```bash
+python3 pipeline/build_games.py      # writes web/public/data/games/ (needs build_layers.py and the tree cache)
+```
+
+* **Courses make scores comparable.** A game's targets are the ones nearest
+  its start, so a start has to be fixed for a score to mean anything. A seed
+  picks it: one of the mode's anchor points (a toilet, a kebab shop, a pump)
+  with enough targets around it, then 250 m off it in a seeded direction.
+  Clicking a mode plays today's course (the date is the seed), so everyone
+  playing on the same day gets the same start; 🎲 rolls a new course, and 📍
+  plays where you stand, unranked. `#play=<mode>:<seed>` in the URL offers a
+  course as a challenge, and the result screen copies that link.
+* **Best scores are per course** and kept in the browser's local storage.
+  There is no shared leaderboard yet.
+* **German first.** The whole interface is German by default, with English
+  one click away on the start screen (or `?lang=en`); the choice is
+  remembered. Strings live in `web/src/i18n.ts`; names from the datasets stay
+  as published.
+* **Needs the tiled build.** The committed Kreuzberg area is too small for a
+  fair start in most modes; there the game says so and plays unranked where
+  you stand.
 
 ---
 
@@ -372,6 +414,10 @@ which is what lets them receive shadows. At night the window layer glows.
 * **Terrain:** Airborne Laserscanning (ALS) — Senatsverwaltung für
   Stadtentwicklung, Bauen und Wohnen Berlin, `dl-de/zero-2.0`.
 * **Trees:** Baumbestand Berlin (Straßen- und Anlagenbäume), `dl-de/zero-2.0`.
+* **Game modes:** Weihnachtsmärkte (SenWEB, curated by ODIS), CC BY;
+  Trinkwasserbrunnen, Zierbrunnen, Kühle Räume, Öffentliche Toiletten,
+  `dl-de/zero-2.0`; Badestellen (LAGeSo / Geoportal Berlin), CC BY 4.0;
+  kebab shops, street pumps and drinking water © OpenStreetMap contributors, ODbL.
 * **Orthophotos:** TrueDOP 2024 (DOP20RGBI) — Senatsverwaltung für
   Stadtentwicklung, Bauen und Wohnen Berlin, `dl-de/zero-2.0`.
 * **Buildings, streets, green space, places:** © OpenStreetMap contributors,
@@ -394,6 +440,20 @@ The *refresh* category (benches, drinking fountains, toilets, shade) mirrors
 what the [Berliner Erfrischungskarte](https://erfrischungskarte.odis-berlin.de/)
 surfaces. Re-run with `--refresh` to re-query Overpass.
 
+## Checking a build
+
+Two checks for the things that broke before, to run after every change to
+the pipeline or the renderer:
+
+- `npm run check -- --dir data/berlin` reads a build folder with the game's
+  own readers: it walks every bridge deck the way the player would (decks
+  you cannot get onto, gaps, jumps, ends blocked by the navigation grid),
+  and looks for water on decks, seams between water levels, and street
+  furniture floating or standing in the water. It writes a report with links
+  into the game (`--out`, `--url`); the counts are for comparing builds.
+- `node scripts/views.ts` renders fixed viewpoints, or any spot with
+  `--at x,z`, into a page of screenshots.
+
 ## Performance
 
 Measurements and what each optimisation changes are
@@ -411,17 +471,3 @@ Silicon Mac:
 
 Shadows are the most expensive single thing in the frame; `G` switches them
 off.
-## Checking a build
-
-Two checks for the things that broke before, to run after every change to
-the pipeline or the renderer:
-
-- `npm run check -- --dir data/berlin` reads a build folder with the game's
-  own readers: it walks every bridge deck the way the player would (decks
-  you cannot get onto, gaps, jumps, ends blocked by the navigation grid),
-  and looks for water on decks, seams between water levels, and street
-  furniture floating or standing in the water. It writes a report with links
-  into the game (`--out`, `--url`); the counts are for comparing builds.
-- `node scripts/views.ts` renders fixed viewpoints, or any spot with
-  `--at x,z`, into a page of screenshots.
-
