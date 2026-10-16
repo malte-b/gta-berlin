@@ -8,6 +8,8 @@
  *   node scripts/views.ts --out /tmp/views        # http://localhost:5173/
  *   node scripts/views.ts --url http://localhost:5174/ --out /tmp/views-new
  *   node scripts/views.ts --only jannowitz,mall
+ *   node scripts/views.ts --at 5300,1000 --at 3004,-260   # any spot, from above
+ *   node scripts/views.ts --close --at 5300,1000              # ... from 15 m away
  *
  * Views missing from a build (tiles not there) come out empty.
  */
@@ -31,6 +33,7 @@ const VIEWS: View[] = [
   { name: 'spawn', note: 'Kreuzberg spawn at street level: no water on the square', x: 918, z: 3320, above: 2, tx: 1000, tz: 3200, pitch: -0.05 },
   { name: 'park', note: 'Görlitzer Park: lawn, paths, no water', x: 4428, z: 2140, above: 3, tx: 4428, tz: 2060, pitch: -0.1 },
   { name: 'schilling-deck', note: 'Schillingbrücke: one deck, no water on it', x: 3870, z: 712, above: 12, tx: 3920, tz: 620, pitch: -0.45 },
+  { name: 'spree-low', note: 'Spree from 8 m up, along the river: one flat level, no lines across the water', x: 2560, z: 60, above: 8, tx: 2900, tz: 160, pitch: -0.12 },
   { name: 'schilling-water', note: 'Schillingbrücke from the river: flat water, deck over it', x: 3830, z: 640, above: 2.5, tx: 3900, tz: 662, pitch: 0.05 },
   { name: 'jannowitz', note: 'Jannowitzbrücke: deck full width, no water on it', x: 3131, z: 130, above: 12, tx: 3131, tz: 50, pitch: -0.45 },
   { name: 'jannowitz-air', note: 'Jannowitzbrücke from above: no building over the river', x: 3244, z: 150, above: 60, tx: 3150, tz: 60, pitch: -0.75 },
@@ -52,7 +55,15 @@ const opt = (name: string, dflt: string): string => {
 const url = opt('--url', 'http://localhost:5173/');
 const out = opt('--out', join(tmpdir(), 'gta-berlin-views'));
 const only = opt('--only', '');
-const views = only ? VIEWS.filter((v) => only.split(',').includes(v.name)) : VIEWS;
+const close = args.includes('--close');
+// --at x,z: a look down at that spot from 40 m south, e.g. from scripts/check.ts
+const at: View[] = args.flatMap((a, i) => (args[i - 1] === '--at' ? [a] : [])).map((a) => {
+  const [x, z] = a.split(',').map(Number);
+  return close
+    ? { name: `at_${Math.round(x)}_${Math.round(z)}`, note: `x ${x}, z ${z}`, x, z: z + 14, above: 9, tx: x, tz: z, pitch: -0.55 }
+    : { name: `at_${Math.round(x)}_${Math.round(z)}`, note: `x ${x}, z ${z}`, x, z: z + 40, above: 35, tx: x, tz: z, pitch: -0.75 };
+});
+const views = at.length ? at : only ? VIEWS.filter((v) => only.split(',').includes(v.name)) : VIEWS;
 mkdirSync(out, { recursive: true });
 
 const PORT = 9336;

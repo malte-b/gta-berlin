@@ -755,7 +755,7 @@ def fit_roof(ks, rings, top, ground, nx, x0, z0):
     return out
 
 
-def complete_3d_tags(osm_path, out_path, nodes, ways, rels, ground, top, grid):
+def complete_3d_tags(osm_path, out_path, nodes, ways, rels, ground, top, grid, drop=()):
     """Fill in 3D tags OSM does not have, without overriding any it does.
 
     Two gaps matter for OSM2World:
@@ -778,7 +778,8 @@ def complete_3d_tags(osm_path, out_path, nodes, ways, rels, ground, top, grid):
 
     ground, top: flat 1 m grids (top is NaN where nothing standing was hit);
     grid = (x0, z0, nx, nz). Writes a patched copy of the OSM file and
-    returns ({osm id: measured height}, {osm id: estimated levels})."""
+    returns ({osm id: measured height}, {osm id: estimated levels}).
+    drop: ids of ways left out, like underground ones (alkis.phantoms)."""
     from groundcover import _rings
     from raster import cells
     x0, z0, nx, nz = grid
@@ -799,7 +800,7 @@ def complete_3d_tags(osm_path, out_path, nodes, ways, rels, ground, top, grid):
 
     shapes = {}
     for wid, (ids, tags) in ways.items():
-        if len(ids) >= 4 and ids[0] == ids[-1] and is_3d(tags):
+        if len(ids) >= 4 and ids[0] == ids[-1] and is_3d(tags) and wid not in drop:
             shapes[("way", wid)] = ([to_world(ids)], tags)
     for rid, (members, tags) in rels.items():
         if tags.get("type") != "multipolygon" or not is_3d(tags):
@@ -912,7 +913,7 @@ def complete_3d_tags(osm_path, out_path, nodes, ways, rels, ground, top, grid):
 
     tree = ET.parse(osm_path)
     root = tree.getroot()
-    buried = []
+    buried, phantom = [], 0
     for el in root:
         key = (el.tag, int(el.get("id", "0")))
         for k, v in adds.get(key, {}).items():
@@ -920,9 +921,13 @@ def complete_3d_tags(osm_path, out_path, nodes, ways, rels, ground, top, grid):
         if el.tag in ("way", "relation") and _underground({t.get("k"): t.get("v")
                                                            for t in el.findall("tag")}):
             buried.append(el)
+        elif el.tag == "way" and key[1] in drop:
+            buried.append(el)
+            phantom += 1
     for el in buried:
         root.remove(el)
-    counts["underground"] = len(buried)
+    counts["underground"] = len(buried) - phantom
+    counts["phantoms"] = phantom
     # generated parts: new nodes and ways with negative ids, as editors do
     from geo import utm33_inv
     nid = wid = 0
@@ -959,7 +964,7 @@ def _underground(tags):
     return layer < 0 and loc not in ("surface", "overground", "roof", "rooftop")
 
 
-def footprints(nodes, ways, rels):
+def footprints(nodes, ways, rels, drop=()):
     """Building outlines that block movement, as lists of rings in world x/z.
 
     Only whole buildings count, not building:part (parts subdivide the same
@@ -992,7 +997,7 @@ def footprints(nodes, ways, rels):
     from groundcover import _rings
     shapes = []
     for _wid, (ids, tags) in ways.items():
-        if len(ids) >= 4 and ids[0] == ids[-1] and blocks(tags):
+        if len(ids) >= 4 and ids[0] == ids[-1] and blocks(tags) and _wid not in drop:
             shapes.append([to_world(ids)])
     for _rid, (members, tags) in rels.items():
         if tags.get("type") != "multipolygon" or not blocks(tags):

@@ -45,6 +45,12 @@ LIFT_RANGE = 1.5         # ... if it is within this of the deck already
 RAIL_SIDE = 2.0          # furniture this close to a deck's edge stands on it
 OVERRUN = 1.5            # metres a deck reaches past its abutments
 LEVEL_GAP = 4.5          # clearance under a road or rail bridge: lower than this is not the street below
+ABUT_REACH = 20.0        # metres past or short of a way's end its abutment (ALKIS) may lie
+ABUT_ANGLE = 0.5         # ... crossing the way at least this steeply (sine)
+ABUT_LAND = (1, 6)       # metres behind an abutment where the road rests on the ground
+ABUT_RISE = 1.5          # ... at most this far from the deck's level, or the slope allows
+ABUT_AGREE = 0.5         # ... and this close to the deck's own surface at that end
+LAND_RUN = 3.0           # metres a deck resting on an abutment runs on over the ground
 
 
 def _query(bb):
@@ -224,13 +230,103 @@ def _smooth(vals, r=3):
             for i in range(n)]
 
 
-def decks(data, ground, top, grid, covered=None):
+class _Lines:
+    """Segments of lines (the abutments) in a coarse grid, to cross with ways."""
+    CELL = 16.0
+
+    def __init__(self, lines):
+        self.cells = {}
+        for line in lines:
+            for a, b in zip(line, line[1:]):
+                for cx in range(int(math.floor(min(a[0], b[0]) / self.CELL)),
+                                int(math.floor(max(a[0], b[0]) / self.CELL)) + 1):
+                    for cz in range(int(math.floor(min(a[1], b[1]) / self.CELL)),
+                                    int(math.floor(max(a[1], b[1]) / self.CELL)) + 1):
+                        self.cells.setdefault((cx, cz), []).append((a, b))
+
+    def cross(self, ax, az, bx, bz):
+        """Where segment a-b crosses a line steeply enough: [t along a-b]."""
+        ex, ez = bx - ax, bz - az
+        le = math.hypot(ex, ez)
+        if le < 1e-9:
+            return []
+        seen, out = set(), []
+        for cx in range(int(math.floor(min(ax, bx) / self.CELL)), int(math.floor(max(ax, bx) / self.CELL)) + 1):
+            for cz in range(int(math.floor(min(az, bz) / self.CELL)), int(math.floor(max(az, bz) / self.CELL)) + 1):
+                for seg in self.cells.get((cx, cz), ()):
+                    if id(seg) in seen:
+                        continue
+                    seen.add(id(seg))
+                    (px, pz), (qx, qz) = seg
+                    fx, fz = qx - px, qz - pz
+                    den = ex * fz - ez * fx
+                    lf = math.hypot(fx, fz)
+                    if lf < 1e-9 or abs(den) < ABUT_ANGLE * le * lf:
+                        continue
+                    t = ((px - ax) * fz - (pz - az) * fx) / den
+                    u = ((px - ax) * ez - (pz - az) * ex) / den
+                    if 0 <= t <= 1 and 0 <= u <= 1:
+                        out.append(t)
+        return out
+
+
+def _to_abutment(st, lines):
+    """Move the start of a station list to its abutment, the line where the
+    bridge rests on the ground (ALKIS Widerlager): OSM's bridge ways stop at
+    the river bank, at the kerb of the street below, or run on onto the
+    embankment. The way is cut there, or carried on to it at its own
+    direction. Returns the new list, or None if no abutment is near."""
+    x, z, dx, dz, hw = st[0]
+    best = None
+    # short of the start: carried on backwards
+    for t in lines.cross(x, z, x - dx * ABUT_REACH, z - dz * ABUT_REACH):
+        d = -t * ABUT_REACH
+        if best is None or abs(d) < abs(best[0]):
+            best = (d, None, t)
+    # past the start, onto the bridge's first metres
+    run = 0.0
+    for i in range(len(st) - 1):
+        if run > ABUT_REACH or i > (len(st) - 1) // 2:
+            break
+        (ax, az), (bx, bz) = st[i][:2], st[i + 1][:2]
+        seg = math.hypot(bx - ax, bz - az)
+        for t in lines.cross(ax, az, bx, bz):
+            d = run + t * seg
+            if best is None or abs(d) < abs(best[0]):
+                best = (d, i, t)
+        run += seg
+    if best is None:
+        return None
+    d, i, t = best
+    if i is None:
+        k = int(-d // STEP)
+        lead = [(x + dx * d, z + dz * d, dx, dz, hw)]
+        lead += [(x - dx * s, z - dz * s, dx, dz, hw) for s in range(k, 0, -1) if s < -d - 0.3]
+        return lead + st
+    a, b = st[i], st[i + 1]
+    cut = (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2], a[3], a[4] + (b[4] - a[4]) * t)
+    rest = st[i + 1:] if t < 0.7 else st[i + 2:]
+    if len(rest) < 2:
+        return None
+    return [cut] + rest
+
+
+def _flip(st):
+    return [(x, z, -dx, -dz, hw) for x, z, dx, dz, hw in reversed(st)]
+
+
+def decks(data, ground, top, grid, covered=None, cadastre=(), abutments=()):
     """Every bridge in the working area with its deck heights (above sea level).
 
     ground, top: the scan's raw 1 m grids (NaN where nothing was returned),
     grid = (X0, Z0, nx, nz); covered: 1 m mask of station halls and platform
     roofs (hall_mask), under which the upper returns are the roof, not the
-    tracks. Returns [{"kind", "abut", "st": [(x, z, y, left, right), ...]}]."""
+    tracks; cadastre: deck outlines from ALKIS (alkis.load), which has every
+    bridge - OSM's own outlines only count where ALKIS has none;
+    abutments: the lines where bridges rest on the ground (alkis.load), to
+    which the ends of the decks are moved, at the height of the ground
+    behind them.
+    Returns [{"kind", "abut", "st": [(x, z, y, left, right), ...]}]."""
     X0, Z0, nx, nz = grid
 
     def cell(x, z):
@@ -267,6 +363,7 @@ def decks(data, ground, top, grid, covered=None):
         hw = half_width(tags, kind)
         ways.append((kind, _layer(tags), [(x, z, hw) for x, z in pts]))
 
+    lines = _Lines(abutments) if abutments else None
     out = []
     for kind, chain, joints, layer in _chains(ways):
         st = _stations(chain)
@@ -283,14 +380,47 @@ def decks(data, ground, top, grid, covered=None):
             return [v for x, z, dx, dz, hw in part for src in (ground, top)
                     for v in section(x, z, dx, dz, max(1.0, hw * 0.4), src)]
 
+        def land(s0):
+            """The ground just behind the start of a station list."""
+            x, z, dx, dz, hw = s0[0]
+            vals = [v for d in range(ABUT_LAND[0], ABUT_LAND[1] + 1)
+                    for v in section(x - dx * d, z - dz * d, dx, dz, max(2.0, hw * 0.6), ground)]
+            return _median(vals) if len(vals) >= 8 else None
+
+        # Each free end to its abutment (ALKIS), if the ground behind it is
+        # at the deck's level: a viaduct passes over the abutments of the
+        # street bridges beneath it, metres lower.
+        rests = [None, None]            # the ground an end rests on there
+        if lines:
+            for end in (0, 1):
+                if joints[end]:
+                    continue
+                moved = _to_abutment(st if end == 0 else _flip(st), lines)
+                if not moved or len(moved) < 3:
+                    continue
+                e = land(moved)
+                rise = max(ABUT_RISE, MAX_SLOPE[kind] * STEP * len(moved) / 2)
+                if e is None or (level is not None and abs(e - level) > rise):
+                    continue
+                # and the deck itself there: road and bridge meet level. A
+                # pedestal, a railing, a stair behind the abutment does not
+                own = _median([v for v in centre(moved[:4])
+                               if level is None or abs(v - level) <= LEVEL_GAP])
+                if own is not None and abs(e - own) > ABUT_AGREE:
+                    continue
+                st = moved if end == 0 else _flip(moved)
+                rests[end] = e
+
         # The abutments: the road carrying on past each end, where it rests on
         # the ground. Only a height near the deck level counts - OSM often
         # stops a bridge at the edges of the street it spans, so just past
         # its end may still be that street, several metres below.
         ends = []
-        for part, joint, beyond in zip((st[:4], st[-4:]), joints, (_beyond(st, 0), _beyond(st, -1))):
+        for end, part, joint, beyond in zip((0, -1), (st[:4], st[-4:]), joints, (_beyond(st, 0), _beyond(st, -1))):
             e = None
-            if not joint:
+            if rests[end] is not None:
+                e = rests[end]
+            elif not joint:
                 vals = [v for x, z, dx, dz, hw in beyond for v in section(x, z, dx, dz, hw, ground)]
                 e = _median(vals) if len(vals) >= 3 else None
             if level is not None and (e is None or abs(e - level) > LEVEL_GAP):
@@ -331,13 +461,29 @@ def decks(data, ground, top, grid, covered=None):
         # run on a little past each abutment, onto the road: the deck's end is
         # cut square, and the corners beside it are often still river or
         # embankment, so without this the way off a bridge can be a gap
+        # an end resting on an abutment runs on over the ground behind it,
+        # which stays as the scan measured it: the road
+        strips = []
         x, z, dx, dz, hw = st[0]
         if not joints[0]:
-            pts.insert(0, (x - dx * OVERRUN, z - dz * OVERRUN, line[0], hw, hw))
+            run = LAND_RUN if rests[0] is not None else OVERRUN
+            pts.insert(0, (x - dx * run, z - dz * run, line[0], hw, hw))
+            if rests[0] is not None:
+                strips.append({"st": pts[:2]})
         x, z, dx, dz, hw = st[-1]
         if not joints[1]:
-            pts.append((x + dx * OVERRUN, z + dz * OVERRUN, line[-1], hw, hw))
-        out.append({"kind": kind, "layer": layer, "abut": (not joints[0], not joints[1]), "st": pts})
+            run = LAND_RUN if rests[1] is not None else OVERRUN
+            pts.append((x + dx * run, z + dz * run, line[-1], hw, hw))
+            if rests[1] is not None:
+                strips.append({"st": pts[-2:]})
+        out.append({"kind": kind, "layer": layer, "abut": (not joints[0], not joints[1]), "st": pts,
+                    "land": strips, "rests": sum(r is not None for r in rests)})
+    if cadastre:
+        def covered_by_cadastre(poly):
+            cx = sum(p[0] for p in poly) / len(poly)
+            cz = sum(p[1] for p in poly) / len(poly)
+            return any(_inside(c, cx, cz) for c in cadastre)
+        outlines = list(cadastre) + [o for o in outlines if not covered_by_cadastre(o)]
     return _close_gaps(_fill_outlines(out, outlines))
 
 
@@ -590,6 +736,10 @@ def hall_mask(ways, nodes, grid):
     return g.data
 
 
+def _near(a, b):
+    return abs(a[0] - b[0]) + abs(a[1] - b[1]) < 0.01
+
+
 def _segments(dk):
     st = dk["st"]
     return zip(st, st[1:])
@@ -634,18 +784,26 @@ def clearer(dks, grid):
     under a deck up through it (from a high quay beside a river, say), where
     it showed as patches of water on the bridge. Everywhere under a deck but
     those abutment ends, the ground is kept below the deck's underside."""
-    ends = []
+    ends, land = [], []
     for dk in dks:
         st = dk["st"]
-        if dk["abut"][0]:
+        rest = [any(_near(l["st"][0], st[0]) or _near(l["st"][1], st[0]) for l in dk.get("land", ())),
+                any(_near(l["st"][0], st[-1]) or _near(l["st"][1], st[-1]) for l in dk.get("land", ()))]
+        land += dk.get("land", [])
+        # an end on an ALKIS abutment has its strip of ground behind it
+        # (land); others the last few metres of their way
+        if dk["abut"][0] and not rest[0]:
             ends.append({"st": st[:ABUT + 1]})
-        if dk["abut"][1]:
+        if dk["abut"][1] and not rest[1]:
             ends.append({"st": st[-ABUT - 1:]})
+    ends += land
+    on_land = set()
+    _rasterise(land, grid, 1.0, lambda k, _y: on_land.add(k))
 
     def clear(h, nx, nz):
         def drop(k, y):
             v = h[k]
-            if v == v and v > y - CLEAR:
+            if v == v and v > y - CLEAR and k not in on_land:
                 h[k] = float("nan")
 
         def lift(k, y):
@@ -764,8 +922,40 @@ def _clip(st, x0, z0, x1, z1):
     return runs
 
 
-def write(dks, x0, z0, sx, sz, out):
-    """bridges.json for the tile [x0, x0+sx) x [z0, z0+sz). None if no deck."""
+def piers(rings_list, dks, ground):
+    """Piers (ALKIS outlines) from the ground up to the deck they carry: the
+    lowest deck over them with room beneath. ground(x, z): absolute height.
+    Returns [{"r": ring, "y0", "y1"}], heights above sea level."""
+    out = []
+    for rings in rings_list:
+        ring = rings[0]
+        cx = sum(p[0] for p in ring) / len(ring)
+        cz = sum(p[1] for p in ring) / len(ring)
+        g = ground(cx, cz)
+        best = None
+        for dk in dks:
+            for (ax, az, ay, al, ar), (bx, bz, by, bl, br) in _segments(dk):
+                ex, ez = bx - ax, bz - az
+                l2 = ex * ex + ez * ez
+                if l2 < 1e-9:
+                    continue
+                t = ((cx - ax) * ex + (cz - az) * ez) / l2
+                if not 0.0 <= t <= 1.0:
+                    continue
+                side = ((cx - ax - ex * t) * -ez + (cz - az - ez * t) * ex) / math.sqrt(l2)
+                if not -(ar + (br - ar) * t) - 1.0 <= side <= al + (bl - al) * t + 1.0:
+                    continue
+                under = ay + (by - ay) * t - THICK[dk["kind"]]
+                if under > g + 1.0 and (best is None or under < best):
+                    best = under
+        if best is not None:
+            out.append({"r": ring, "y0": g - 0.5, "y1": best + 0.05})
+    return out
+
+
+def write(dks, x0, z0, sx, sz, out, pier_list=(), roofs=()):
+    """bridges.json for the tile [x0, x0+sx) x [z0, z0+sz). None if there is
+    nothing in it. Piers and roofs belong to the tile their centre lies in."""
     items = []
     for dk in dks:
         # Cut at the tile's edge plus the deck's width: a wide slab crossing
@@ -781,9 +971,26 @@ def write(dks, x0, z0, sx, sz, out):
             items.append({"k": dk["kind"], "t": THICK[dk["kind"]],
                           "p": [[round(x, 2), round(z, 2), round(y - ORIGIN_H, 2),
                                  round(wl, 2), round(wr, 2)] for x, z, y, wl, wr in pts]})
-    if not items:
+    def mine(ring):
+        cx = sum(p[0] for p in ring) / len(ring)
+        cz = sum(p[1] for p in ring) / len(ring)
+        return x0 <= cx < x0 + sx and z0 <= cz < z0 + sz
+
+    def pts(ring):
+        return [[round(x, 2), round(z, 2)] for x, z in ring]
+    pout = [{"r": pts(p["r"]), "y0": round(p["y0"] - ORIGIN_H, 2), "y1": round(p["y1"] - ORIGIN_H, 2)}
+            for p in pier_list if mine(p["r"])]
+    rout = [{"r": pts(r["r"]), "y": round(r["y"] - ORIGIN_H, 2), "t": r["t"]}
+            for r in roofs if mine(r["r"])]
+    if not (items or pout or rout):
         return None
     path = os.path.join(out, "bridges.json")
+    data = {"decks": items}
+    if pout:
+        data["piers"] = pout
+    if rout:
+        data["roofs"] = rout
     with open(path, "w") as fh:
-        json.dump({"decks": items}, fh, separators=(",", ":"))
-    return {"file": "bridges.json", "count": len(items), "bytes": os.path.getsize(path)}
+        json.dump(data, fh, separators=(",", ":"))
+    return {"file": "bridges.json", "count": len(items), "piers": len(pout), "roofs": len(rout),
+            "bytes": os.path.getsize(path)}

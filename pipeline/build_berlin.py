@@ -144,6 +144,9 @@ def build_tile(key, args):
     t0 = time.time()
     with open(os.path.join(LOGS, key + ".log"), "w") as fh, contextlib.redirect_stdout(fh):
         try:
+            if args.water_only:
+                rewater(key, area, out, args)
+                return key, time.time() - t0, None
             manifest, _nav = bw.build(area, out, args, margin=MARGIN)
             pois = build_pois.build(
                 manifest["origin"], manifest["world"],
@@ -159,6 +162,26 @@ def build_tile(key, args):
             traceback.print_exc(file=sys.stdout)
             return key, time.time() - t0, traceback.format_exc().strip().splitlines()[-1]
     return key, time.time() - t0, None
+
+
+def rewater(key, area, out, args):
+    """Terrain and water of a finished tile again, everything else as it is:
+    buildings, photos, trees and furniture keep their files, so an upload
+    only sends what changed."""
+    tj = os.path.join(out, "tile.json")
+    manifest = json.load(open(tj))
+    patch, _ = bw.build(area, out, args, margin=MARGIN)
+    manifest["terrain"] = patch["terrain"]
+    manifest["cover"] = patch["cover"]
+    manifest["world"][1] = round(patch["terrain"]["hmin"], 1)
+    for k in ("bridges", "water"):
+        if patch[k]:
+            manifest[k] = patch[k]
+        else:
+            manifest.pop(k, None)
+    with open(tj + ".part", "w") as mf:
+        json.dump(manifest, mf, indent=1)
+    os.replace(tj + ".part", tj)
 
 
 def write_index(env, ground_tex, spawn):
@@ -229,6 +252,8 @@ def main():
     ap.add_argument("--rebuild", action="store_true", help="rebuild finished tiles too")
     ap.add_argument("--osm-refresh", action="store_true",
                     help="fetch today's OSM extract and rebuild the tiles whose OSM data changed")
+    ap.add_argument("--water-only", action="store_true",
+                    help="redo only terrain and water of finished tiles (implies --rebuild)")
     ap.add_argument("--index", action="store_true",
                     help="only rewrite world.json from the tiles already built")
     bw.add_args(ap)
@@ -265,7 +290,9 @@ def main():
     if args.radius is not None:
         keys = [k for k in keys if dist(k) <= args.radius + 0.71]
     keys.sort(key=dist)
-    todo = [k for k in keys if args.rebuild
+    if args.water_only:
+        keys = [k for k in keys if os.path.exists(os.path.join(tile_dir(k), "tile.json"))]
+    todo = [k for k in keys if args.rebuild or args.water_only
             or not os.path.exists(os.path.join(tile_dir(k), "tile.json"))]
     pending = set()
     if args.osm_refresh:

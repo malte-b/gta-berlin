@@ -30,6 +30,9 @@ CELL = 2             # metres per cell of water.json
 REACH = 4            # metres the surface reaches past the outline, under the banks
 BELOW = 0.6          # the river bed stays at least this far under the surface
 MIN_RETURNS = 12     # ground returns a block needs to measure its own level
+SAME = 0.12          # neighbouring blocks this close in level are one body of water
+LOCK = 1.0           # a step this large between bodies is real: a lock, a weir
+ROUND = 0.05         # body levels rounded to this, so tiles agree at their edges
 
 
 def levels(wet, ground, nx, nz, under_deck):
@@ -68,7 +71,81 @@ def levels(wet, ground, nx, nz, under_deck):
             if near:
                 lev[b] = sum(near) / len(near)
                 changed = True
-    return lev, bx
+    return _bodies(lev, bx, bz), bx
+
+
+def _bodies(lev, bx, bz):
+    """One level per body of water. Block by block the measurement wanders a
+    few centimetres, and blocks along a quay read high from the returns off
+    the bank: every block border was a step, a line on the river. So:
+    neighbouring blocks within SAME of each other are one body; a body next
+    to a lower, larger one within LOCK of it is the bank's doing and joins it
+    (a lock's step is larger); each body takes the median of its blocks,
+    rounded to ROUND - neighbouring tiles measure the same river from
+    overlapping windows, and so meet at the same level."""
+    n = bx * bz
+    parent = list(range(n))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    def near(b):
+        r, c = divmod(b, bx)
+        for rr in range(r - 1, r + 2):
+            for cc in range(c - 1, c + 2):
+                o = rr * bx + cc
+                if (rr, cc) != (r, c) and 0 <= rr < bz and 0 <= cc < bx and lev[o] is not None:
+                    yield o
+
+    blocks = [b for b in range(n) if lev[b] is not None]
+    for b in blocks:
+        for o in near(b):
+            if abs(lev[b] - lev[o]) < SAME:
+                parent[find(b)] = find(o)
+
+    def level_of(members):
+        v = sorted(lev[b] for b in members)
+        return v[len(v) // 2]
+
+    core = {b: find(b) for b in blocks}
+
+    changed = True
+    while changed:
+        changed = False
+        bodies = {}
+        for b in blocks:
+            bodies.setdefault(find(b), []).append(b)
+        level = {k: level_of(m) for k, m in bodies.items()}
+        for k, members in sorted(bodies.items(), key=lambda kv: len(kv[1])):
+            best = None
+            for b in members:
+                for o in near(b):
+                    ko = find(o)
+                    if ko == k or len(bodies.get(ko, ())) < len(members):
+                        continue
+                    if level[k] - LOCK < level[ko] < level[k] and (best is None or level[ko] < level[best]):
+                        best = ko
+            if best is not None:
+                parent[k] = best
+                changed = True
+                break       # bodies changed: count again
+
+    out = list(lev)
+    bodies = {}
+    for b in blocks:
+        bodies.setdefault(find(b), []).append(b)
+    for members in bodies.values():
+        # the level of the body's largest core, not of the bank blocks taken in
+        cores = {}
+        for b in members:
+            cores.setdefault(core[b], []).append(b)
+        y = round(level_of(max(cores.values(), key=len)) / ROUND) * ROUND
+        for b in members:
+            out[b] = y
+    return out
 
 
 def level_at(lev, bx, nx, nz, c, r):

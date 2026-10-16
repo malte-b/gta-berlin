@@ -411,3 +411,17 @@ Silicon Mac:
 
 Shadows are the most expensive single thing in the frame; `G` switches them
 off.
+## Checking a build
+
+Two checks for the things that broke before, to run after every change to
+the pipeline or the renderer:
+
+- `npm run check -- --dir data/berlin` reads a build folder with the game's
+  own readers: it walks every bridge deck the way the player would (decks
+  you cannot get onto, gaps, jumps, ends blocked by the navigation grid),
+  and looks for water on decks, seams between water levels, and street
+  furniture floating or standing in the water. It writes a report with links
+  into the game (`--out`, `--url`); the counts are for comparing builds.
+- `node scripts/views.ts` renders fixed viewpoints, or any spot with
+  `--at x,z`, into a page of screenshots.
+

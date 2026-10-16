@@ -46,6 +46,7 @@ import pack_buildings                                            # noqa: E402
 import street_furniture                                          # noqa: E402
 import trees as trees_mod                                        # noqa: E402
 import water as water_mod                                        # noqa: E402
+import alkis                                                     # noqa: E402
 from geo import ORIGIN_E, ORIGIN_H, ORIGIN_N, utm33_inv          # noqa: E402
 from raster import Grid                                          # noqa: E402
 
@@ -265,9 +266,19 @@ def build(area, out, args, margin=0, log=log):
     # station halls: under their roofs the scan sees the roof, not the tracks
     osm_path = osm3d.load_osm(bbox_ll, os.path.join(CACHE, "osm"), args.refresh)
     nodes, ways, rels = osm3d.parse_osm(osm_path)
+    # the cadastre's bridge outlines, piers and canopies
+    cad = alkis.load((E0, N0, E1, N1), os.path.join(CACHE, "alkis"), args.refresh)
     decks = bridges.decks(bridges.load(bbox_ll, os.path.join(CACHE, "osm"), args.refresh),
-                          graw, traw, grid, bridges.hall_mask(ways, nodes, grid))
+                          graw, traw, grid, bridges.hall_mask(ways, nodes, grid),
+                          cadastre=[b["rings"][0] for b in cad["bridges"]], abutments=cad["abutments"])
+    log("  %d deck ends moved to their abutments" % sum(d.get("rests", 0) for d in decks))
+    roofs = alkis.roofs(cad, graw, traw, grid, alkis.osm_mask(ways, nodes, grid))
+    phantoms = alkis.phantoms(cad, nodes, ways, graw, traw, grid)
     del traw
+    log("  ALKIS: %d bridge outlines, %d abutments, %d piers; %d of %d canopies missing in OSM;"
+        " %d OSM buildings over underground ones, with no roof in the scan"
+        % (len(cad["bridges"]), len(cad["abutments"]), len(cad["piers"]), len(roofs),
+           len(cad["canopies"]), len(phantoms)))
     log("  %d decks: %s" % (len(decks), ", ".join(
         "%d %s" % (sum(d["kind"] == k for d in decks), k) for k in ("road", "path", "rail"))))
 
@@ -307,7 +318,8 @@ def build(area, out, args, margin=0, log=log):
     log("  terrain %d x %d at 1 m, %.0f%% measured, %.1f .. %.1f m above sea level"
         % (keep.nx, keep.nz, measured * 100, hmin + ORIGIN_H, hmax + ORIGIN_H))
     log("  %d cells raised out of stairwells, ramps and light wells" % raised)
-    bmeta = bridges.write(decks, x0, z0, sx, sz, out)
+    pier_list = bridges.piers(cad["piers"], decks, lambda x, z: terr.height(x, z) + ORIGIN_H)
+    bmeta = bridges.write(decks, x0, z0, sx, sz, out, pier_list, roofs)
     if bmeta:
         log("  -> bridges.json: %d deck pieces (%.0f KB)" % (bmeta["count"], bmeta["bytes"] / 1024))
     elif os.path.exists(os.path.join(out, "bridges.json")):
@@ -317,6 +329,12 @@ def build(area, out, args, margin=0, log=log):
         log("  -> water.json (%.0f KB)" % (wmeta["bytes"] / 1024))
     elif os.path.exists(os.path.join(out, "water.json")):
         os.remove(os.path.join(out, "water.json"))
+    if getattr(args, "water_only", False):
+        # terrain and water redone; the caller patches them into tile.json
+        return {"terrain": {"file": "terrain.bin", "minX": x0, "minZ": z0, "cell": 1.0,
+                            "nx": keep.nx, "nz": keep.nz,
+                            "hmin": round(hmin, 2), "hmax": round(hmax, 2)},
+                "bridges": bmeta, "water": wmeta, "cover": cover}, None
 
     # --- orthophotos -------------------------------------------------------
     log("True orthophotos (20 cm) ...")
@@ -333,14 +351,15 @@ def build(area, out, args, margin=0, log=log):
     top = als.roofs(E0, N0, E1, N1, os.path.join(CACHE, "als"))
     patched = os.path.splitext(osm_path)[0] + "_als.osm"
     counts, with_parts = osm3d.complete_3d_tags(
-        osm_path, patched, nodes, ways, rels, h, top, (X0, Z0, nx, nz))
+        osm_path, patched, nodes, ways, rels, h, top, (X0, Z0, nx, nz), phantoms)
     log("  roofs fitted to the laser scan: %s" % ", ".join(
         "%d %s" % (v, k) for k, v in sorted(counts["roofs"].items(), key=lambda kv: -kv[1])))
     log("  %d buildings split by measured height into %d parts"
         % (counts["split"], counts["parts"]))
     log("  %d heights measured, %d storey counts estimated; %d outlines left to their parts"
         % (counts["heights"], counts["levels"], with_parts))
-    log("  %d underground buildings and parts left out" % counts["underground"])
+    log("  %d underground buildings and parts left out, %d phantoms (ALKIS)"
+        % (counts["underground"], counts["phantoms"]))
     glb = os.path.splitext(patched)[0] + "_textured_lod%d_tex%d.glb" % (args.lod, args.texture_res)
     t0 = time.time()
     if ways:
@@ -389,7 +408,7 @@ def build(area, out, args, margin=0, log=log):
 
     # --- trees -------------------------------------------------------------
     solid = Grid(X0, Z0, 1.0, nx, nz)          # building outlines, reused for nav
-    shapes = osm3d.footprints(nodes, ways, rels)
+    shapes = osm3d.footprints(nodes, ways, rels, phantoms)
     for rings in shapes:
         solid.polygon(rings, 1)
 

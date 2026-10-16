@@ -22,6 +22,11 @@ interface DeckData {
   p: [number, number, number, number, number][];
 }
 
+/** A pier from the cadastre: its outline, from y0 up to the deck at y1. */
+interface PierData { r: [number, number][]; y0: number; y1: number }
+/** A canopy the cadastre has and OSM lacks: outline, roof height, thickness. */
+interface RoofData { r: [number, number][]; y: number; t: number }
+
 /** Coplanar decks side by side (a road and its separately mapped pavement)
  *  would flicker where they overlap; these lift them apart. */
 const LIFT: Record<DeckKind, number> = { road: 0, rail: 0.015, path: 0.03 };
@@ -37,10 +42,14 @@ export interface DeckHit {
 
 export class Decks {
   private readonly decks: DeckData[];
+  private readonly piers: PierData[];
+  private readonly roofs: RoofData[];
   /** Segment references (deck, station) by CELL-metre bucket. */
   private readonly buckets = new Map<string, [number, number][]>();
 
-  constructor(data: { decks: DeckData[] }) {
+  constructor(data: { decks: DeckData[]; piers?: PierData[]; roofs?: RoofData[] }) {
+    this.piers = data.piers ?? [];
+    this.roofs = data.roofs ?? [];
     // older files give one half width for both sides
     this.decks = data.decks.filter((d) => d.p.length >= 2).map((d) => ({
       ...d, p: d.p.map((q) => (q.length >= 5 ? q : [q[0], q[1], q[2], q[3], q[3]]) as DeckData['p'][number]),
@@ -179,6 +188,28 @@ export class Decks {
       quad(right[0], down(right[0]), down(left[0]), left[0]);
       quad(left[n - 1], down(left[n - 1]), down(right[n - 1]), right[n - 1]);
     }
+    // piers and canopy roofs: outlines raised into prisms, top and bottom
+    // triangulated, sides as quads
+    const prism = (ring: [number, number][], y0: number, y1: number) => {
+      let r = ring.map(([x, z]) => new THREE.Vector2(x - ox, z - oz));
+      if (r.length < 3) return;
+      // wound so that the top faces up: clockwise in x/z seen from above
+      if (THREE.ShapeUtils.isClockWise(r)) r = r.reverse();
+      const k = pos.length / 3;
+      for (const p of r) pos.push(p.x, y1, p.y);
+      for (const p of r) pos.push(p.x, y0, p.y);
+      const n = r.length;
+      for (const [a, b, c] of THREE.ShapeUtils.triangulateShape(r, [])) {
+        idx.push(k + a, k + c, k + b);              // top
+        idx.push(k + n + a, k + n + b, k + n + c);  // bottom
+      }
+      for (let i = 0; i < n; i++) {
+        const j = (i + 1) % n;
+        quad([r[i].x, y1, r[i].y], [r[j].x, y1, r[j].y], [r[j].x, y0, r[j].y], [r[i].x, y0, r[i].y]);
+      }
+    };
+    for (const p of this.piers) prism(p.r, p.y0, p.y1);
+    for (const f of this.roofs) prism(f.r, f.y - f.t, f.y);
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     geo.setIndex(idx);
