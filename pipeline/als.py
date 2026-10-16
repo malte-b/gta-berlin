@@ -130,6 +130,38 @@ def index(cache_dir):
     return out
 
 
+class _Deflate64:
+    """zlib-like face for inflate64, which has no flush()."""
+
+    def __init__(self):
+        import inflate64
+        self._inf = inflate64.Inflater()
+
+    def decompress(self, data):
+        return self._inf.inflate(data)
+
+    def flush(self):
+        return b""
+
+
+def _decompressor(entry):
+    """For a zip member's compression method: Deflate (8) for most regions,
+    Deflate64 (9) for Suedost.zip, which the standard library cannot read."""
+    method = entry["method"]
+    if method == 8:
+        return zlib.decompressobj(-15)
+    if method == 9:
+        try:
+            return _Deflate64()
+        except ImportError:
+            raise IOError("%s is Deflate64-compressed; it needs the inflate64 package "
+                          "(uv venv && uv pip install -r pipeline/requirements.txt, "
+                          "then run with .venv/bin/python)" % entry["name"]) from None
+    if method == 0:
+        return None
+    raise IOError("unsupported zip compression %d for %s" % (method, entry["name"]))
+
+
 def _member_stream(entry):
     """Yield the decompressed bytes of one zip member, streamed via curl."""
     url = ATOM + entry["region"] + ".zip"
@@ -148,7 +180,7 @@ def _member_stream(entry):
                           "--speed-limit", "10000", "--speed-time", "60",
                           "-r", "%d-%d" % (start, end), url],
                          stdout=subprocess.PIPE)
-    inflate = zlib.decompressobj(-15) if entry["method"] == 8 else None
+    inflate = _decompressor(entry)
     try:
         while True:
             chunk = p.stdout.read(1 << 22)

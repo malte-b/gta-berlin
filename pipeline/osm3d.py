@@ -303,7 +303,9 @@ def fit_projection(objects, origin, nodes):
                             bd, best = d, (e, n)
             if best:
                 pairs.append((x, z, best[0], best[1]))
-    if len(pairs) < 10:
+    # an affine fit needs three corners; tiles of forest or water may hold a
+    # single small building, too few to also weed out outliers (below)
+    if len(pairs) < 4:
         raise RuntimeError("could not match OSM2World output to OSM nodes")
 
     def solve(ps):
@@ -332,7 +334,8 @@ def fit_projection(objects, origin, nodes):
                            cn[0] * p[0] + cn[1] * p[1] + cn[2] - p[3]) for p in ps]
 
     ce, cn = solve(pairs)
-    for _ in range(3):
+    keep = pairs
+    for _ in range(3 if len(pairs) >= 10 else 0):
         r = resid(pairs, ce, cn)
         keep = [p for p, e in zip(pairs, r) if e < 0.15]
         if len(keep) < 10:

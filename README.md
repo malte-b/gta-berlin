@@ -86,14 +86,19 @@ build can feed another client (a Godot port is planned).
 ### All of Berlin
 
 ```bash
-python3 pipeline/build_berlin.py --radius 3      # everything within 3 km of the spawn
-python3 pipeline/build_berlin.py                 # the whole city, ~1,066 tiles
+uv venv && uv pip install -r pipeline/requirements.txt    # once
+.venv/bin/python pipeline/build_berlin.py --radius 3     # everything within 3 km of the spawn
+.venv/bin/python pipeline/build_berlin.py                # the whole city, ~1,066 tiles
 ```
 
+The one package outside the standard library, `inflate64`, is for the laser
+scan of south-east Berlin: `Suedost.zip` is Deflate64-compressed, which
+Python's zlib cannot read.
+
 This builds the city as 1 × 1 km tiles, matching the laser scan's own km grid,
-into `data/berlin/` at the repository root. It is git-ignored and local only:
-at full detail the whole city is 10–20 GB, far more than the repository or
-Vercel can hold. `npm run dev` serves it, and when `data/berlin/world.json`
+into `data/berlin/` at the repository root. It is git-ignored: at full detail
+the whole city is 10–20 GB, far more than the repository or Vercel can hold,
+so it is hosted on object storage instead (see below). `npm run dev` serves it, and when `data/berlin/world.json`
 exists the game streams those tiles instead of the committed Kreuzberg area.
 
 * **Tiles are the single-area build, run per km** with a 100 m margin. Hole
@@ -118,6 +123,34 @@ exists the game streams those tiles instead of the committed Kreuzberg area.
   the air. 20 cm orthophotos are swapped in per 100 m chunk within ~320 m. Fog
   closes before the edge of what is loaded. Geometry is stored relative to each
   tile, so 40 km of coordinates don't jitter in 32-bit floats.
+
+### Hosting the tiles
+
+The tiles are static files, so any S3-compatible object storage can serve
+them: MinIO (e.g. the Datahub Berlin), Hetzner, STACKIT, IONOS, Cloudflare R2.
+`sync_tiles.py` uploads them with the AWS CLI (`brew install awscli`), whose
+own configuration holds the credentials:
+
+```bash
+aws configure --profile tiles                     # once: access key and secret
+python3 pipeline/sync_tiles.py s3://gta-berlin --endpoint https://s3.example.berlin --profile tiles
+VITE_TILE_BASE=https://s3.example.berlin/gta-berlin/ npm run build
+```
+
+* **Only changes go up.** After a rebuild of a few tiles the next sync takes
+  minutes. `world.json` goes last, so it never names a tile that isn't
+  uploaded yet. `--dry-run` shows what would change, and `--delete` also
+  removes remote files that are gone locally.
+* **Content types and caching are set per file.** Tile files are cached for a
+  year: `world.json` gives every tile a version (the time it was built), which
+  the game appends to its URLs, so a rebuilt tile is fetched fresh.
+  `world.json` itself is revalidated on every load.
+* **The bucket needs** anonymous read access (a public-read bucket policy)
+  and, when the game runs on another domain, CORS for GET from that domain.
+  MinIO allows every origin by default.
+* `VITE_TILE_BASE` is read at build time. Set it in Vercel's environment
+  variables to use the bucket in production. Without it, the game uses the
+  local `data/berlin/` and falls back to the committed area.
 
 ### Data layers
 

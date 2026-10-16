@@ -49,6 +49,8 @@ type Uniforms = { uniforms: Record<string, THREE.IUniform> };
 export class Tile {
   readonly key: string;
   readonly base: string;
+  /** Build version, appended to every URL of the tile; see Manifest.tiles. */
+  readonly version: string | undefined;
   readonly bounds: [number, number, number, number];   // x0, z0, x1, z1
   readonly box: number[];
   readonly group = new THREE.Group();
@@ -75,9 +77,11 @@ export class Tile {
   private textures = new Set<THREE.Texture>();
   private disposed = false;
 
-  constructor(key: string, base: string, world: number[], manifest: TileManifest | null = null) {
+  constructor(key: string, base: string, world: number[], manifest: TileManifest | null = null,
+              version?: string) {
     this.key = key;
     this.base = base;
+    this.version = version;
     this.box = world;
     this.bounds = [world[0], world[2], world[3], world[5]];
     this.manifest = manifest;
@@ -99,7 +103,9 @@ export class Tile {
 
   /* --- loading ----------------------------------------------------------- */
 
-  private url(file: string): string { return this.base + file; }
+  private url(file: string): string {
+    return this.base + file + (this.version ? `?v=${this.version}` : '');
+  }
 
   private async texture(file: string, aniso: number): Promise<THREE.Texture> {
     const tex = await new THREE.TextureLoader().loadAsync(this.url(file));
@@ -509,6 +515,8 @@ export class Tile {
     const g = c.getContext('2d')!;
     const img = await new Promise<HTMLImageElement>((res, rej) => {
       const im = new Image();
+      // the tiles may come from object storage; read back below, so CORS
+      im.crossOrigin = 'anonymous';
       im.onload = () => res(im);
       im.onerror = rej;
       im.src = this.url(cv.file);

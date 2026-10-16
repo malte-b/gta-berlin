@@ -4,8 +4,11 @@ import { NavGrid } from './tiles';
 import { Tile, type GroundKind, type SharedGround, type TileManifest } from './tile';
 
 const DATA = 'data/';
-/** All of Berlin, built by pipeline/build_berlin.py; local only. */
-const BERLIN = 'data/berlin/';
+/** All of Berlin, built by pipeline/build_berlin.py: served locally by the dev
+ *  server, or from object storage when VITE_TILE_BASE names its URL (see
+ *  pipeline/sync_tiles.py). */
+const BERLIN = ((import.meta.env.VITE_TILE_BASE as string | undefined) || 'data/berlin')
+  .replace(/\/?$/, '/');
 
 // Streaming distances, metres from the player to the nearest edge of a tile.
 // Street level is hazed out by ~1.1 km, so full detail need not reach further;
@@ -28,7 +31,8 @@ export interface Manifest {
   spawn?: { x: number; z: number; heading?: number; facing?: string };
   attribution: string[];
   /** Tiled builds: every finished tile, by laser-scan km "E_N". */
-  tiles?: Record<string, { dir: string; world: Manifest['world'] }>;
+  /** v changes whenever the tile is rebuilt, so cached copies are not reused. */
+  tiles?: Record<string, { dir: string; world: Manifest['world']; v?: string }>;
 }
 
 export interface Env {
@@ -100,7 +104,7 @@ export class World {
 
     if (this.tiled) {
       for (const [key, t] of Object.entries(man.tiles!)) {
-        this.tiles.set(key, new Tile(key, this.base + t.dir, t.world));
+        this.tiles.set(key, new Tile(key, this.base + t.dir, t.world, null, t.v));
       }
       this.viewLimit = COARSE_IN;
       // a build still under way may not have reached the spawn yet
@@ -215,7 +219,7 @@ export class World {
     tile.dispose();
     // a fresh one in its place, should the player come back
     if (this.tiles.get(tile.key) === tile) {
-      this.tiles.set(tile.key, new Tile(tile.key, tile.base, tile.box, tile.manifest));
+      this.tiles.set(tile.key, new Tile(tile.key, tile.base, tile.box, tile.manifest, tile.version));
     }
   }
 

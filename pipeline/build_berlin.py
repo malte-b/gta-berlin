@@ -140,7 +140,10 @@ def write_index(env, ground_tex, spawn):
         if not os.path.exists(path):
             continue
         m = json.load(open(path))
-        tiles[key] = {"dir": "tiles/%s/" % key, "world": m["world"]}
+        # tile.json is written last, so its time changes with every rebuild;
+        # the game appends it to the tile's URLs, which outdates cached copies
+        tiles[key] = {"dir": "tiles/%s/" % key, "world": m["world"],
+                      "v": format(int(os.stat(path).st_mtime), "x")}
     if not tiles:
         return 0
     ws = [t["world"] for t in tiles.values()]
@@ -163,10 +166,18 @@ def write_index(env, ground_tex, spawn):
     if spawn:
         index["spawn"] = spawn
     path = os.path.join(OUT, "world.json")
-    with open(path + ".part", "w") as fh:
+    # per process: sync_tiles.py may rewrite it while a build is running
+    part = "%s.%d.part" % (path, os.getpid())
+    with open(part, "w") as fh:
         json.dump(index, fh, indent=1)
-    os.replace(path + ".part", path)
+    os.replace(part, path)
     return len(tiles)
+
+
+def reindex():
+    """Rewrite world.json from the finished tiles, keeping its shared assets."""
+    old = json.load(open(os.path.join(OUT, "world.json")))
+    return write_index(old.get("environment"), list(old["groundTextures"]), old.get("spawn"))
 
 
 def main():
@@ -179,8 +190,13 @@ def main():
     ap.add_argument("--workers", type=int, default=4,
                     help="tiles built at once; each needs up to ~10 GB of memory")
     ap.add_argument("--rebuild", action="store_true", help="rebuild finished tiles too")
+    ap.add_argument("--index", action="store_true",
+                    help="only rewrite world.json from the tiles already built")
     bw.add_args(ap)
     args = ap.parse_args()
+    if args.index:
+        log("world.json: %d tiles" % reindex())
+        return 0
     if args.refresh:
         # it would send every tile's OSM questions to Overpass after all
         ap.error("--refresh is for build_world.py; here OSM comes from the weekly "
