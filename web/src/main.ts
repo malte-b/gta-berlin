@@ -8,12 +8,14 @@ import { Locator } from './locate';
 import { PoiLayer } from './pois';
 import { LayerPanel } from './layerpanel';
 import { skyMaterial } from './materials';
-import { makeGame, recordScore, type Game } from './games';
+import { makeGame, type Game } from './games';
+import { bestScore, recordRun } from './scores';
 import { Menu, type Choice } from './menu';
 import { applyStatic, setLang, t, type Lang } from './i18n';
 import { TouchControls, isTouchDevice } from './touch';
 import { makeSleigh, poseSleigh } from './sleigh';
-import { makeBike, makeHuman, makeScooter, poseCycle, poseDrive,
+import { LOW } from './quality';
+import { makeBike, makeCar, makeHuman, makeScooter, poseCycle, poseDrive,
          poseIdle, poseJump, poseScoot, poseWalk } from './character';
 
 
@@ -38,11 +40,14 @@ window.addEventListener('unhandledrejection', (e) => fail(e.reason));
 
 /* --- renderer ------------------------------------------------------------ */
 
+// A phone (quality.ts) draws at 1.5x without multisampling: a 3x screen at
+// 2x with 4x MSAA is ~60 MB of framebuffer before anything is drawn, and
+// the extra sharpness barely shows on a screen that small.
 const renderer = new THREE.WebGLRenderer({
-  antialias: true,
+  antialias: !LOW,
   powerPreference: 'high-performance',
 });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(devicePixelRatio, LOW ? 1.5 : 2));
 renderer.setSize(innerWidth, innerHeight);
 // Everything in the city is a standard PBR material now, so three does the
 // tone mapping and colour conversion; only the sky still does its own.
@@ -59,6 +64,8 @@ const FOG_DAY = new THREE.Color(0x9fb2c6);
 const FOG_NIGHT = new THREE.Color(0x0d1119);
 const fog = new THREE.Fog(FOG_DAY.getHex(), 260, 1100);
 const background = FOG_DAY.clone();
+const FOG_SCRATCH = new THREE.Color();
+const SUN_NIGHT = new THREE.Color(0x8aa0d0);
 scene.fog = fog;
 scene.background = background;
 
@@ -82,7 +89,7 @@ const sunDir = new THREE.Vector3(0.42, 0.72, 0.46).normalize();
 const SHADOW_SPAN = 140;
 const sun = new THREE.DirectionalLight(0xfff1dc, 2.6);
 sun.castShadow = true;
-sun.shadow.mapSize.set(4096, 4096);
+sun.shadow.mapSize.set(LOW ? 2048 : 4096, LOW ? 2048 : 4096);
 sun.shadow.camera.left = sun.shadow.camera.bottom = -SHADOW_SPAN;
 sun.shadow.camera.right = sun.shadow.camera.top = SHADOW_SPAN;
 sun.shadow.camera.near = 1;
@@ -174,7 +181,11 @@ let pointerLocked = false;
 
 let game: Game | null = null;
 let gameSeed: number | null = null;
+let gameChoice: Choice | null = null;
 let starting = false;
+/** A game on hold: the clock, the rules and the player all wait. */
+let paused = false;
+let pausedAt = 0;
 
 const menu = new Menu((c) => void choose(c));
 
@@ -206,10 +217,13 @@ async function choose(c: Choice): Promise<void> {
       }
     }
     g.prepare();
+    // the score to beat, chased live
+    if (ranked !== null) g.best = bestScore(c.id, ranked);
     document.body.classList.add('gaming');
     pois.quiet = true;
     game = g;
     gameSeed = ranked;
+    gameChoice = c;
     g.start();
     if (ranked !== null) hud.hint('', 0.01);
   } catch (err) {
@@ -219,21 +233,67 @@ async function choose(c: Choice): Promise<void> {
   }
 }
 
-function endGame(abandoned: boolean): void {
-  if (!game) return;
+/** Take the running game down; returns it for the result. */
+function stopGame(): Game | null {
   const g = game;
+  if (!g) return null;
   game = null;
+  setPaused(false);
   g.stop();
   document.body.classList.remove('gaming');
   pois.quiet = false;
   keys.clear();
+  return g;
+}
+
+function endGame(abandoned: boolean): void {
+  const g = stopGame();
+  if (!g) return;
   if (abandoned || !g.result) {
     menu.showAbandoned();
     return;
   }
-  const best = gameSeed !== null && recordScore(g.info.id, gameSeed, g.result.score);
+  const r = g.result;
+  const best = recordRun({ mode: g.info.id, seed: gameSeed, score: r.score, count: r.count,
+                           medal: r.medal, combo: r.combo, at: Date.now() });
   menu.showResult(g.info.id, gameSeed, g.result, best);
 }
+
+/* --- pause ---------------------------------------------------------------- */
+
+const pauseEl = document.getElementById('pause')!;
+
+function setPaused(on: boolean): void {
+  if (on === paused) return;
+  paused = on;
+  pauseEl.classList.toggle('on', on);
+  keys.clear();
+  if (on) {
+    pausedAt = performance.now();
+    document.getElementById('pauseInfo')!.textContent = game?.status() ?? '';
+    if (document.pointerLockElement) document.exitPointerLock();
+  }
+}
+
+/** Pause a running game; Esc, P, the touch ⏸, the tab going out of sight. */
+function pause(): void {
+  if (game && game.state !== 'over' && !menu.open) setPaused(true);
+}
+
+function resume(): void {
+  setPaused(false);
+  if (!touchDevice) lockPointer();
+}
+
+document.getElementById('pauseResume')!.addEventListener('click', resume);
+document.getElementById('pauseExit')!.addEventListener('click', () => endGame(true));
+document.getElementById('pauseRestart')!.addEventListener('click', () => {
+  const c = gameChoice;
+  stopGame();
+  if (c) void choose(c);
+});
+// a call, the app switcher, another tab: nobody plays on unseen
+document.addEventListener('visibilitychange', () => { if (document.hidden) pause(); });
 
 const goInput = document.getElementById('goInput') as HTMLInputElement;
 const typing = () => document.activeElement === goInput;
@@ -254,13 +314,19 @@ addEventListener('keydown', (e) => {
   }
   if (e.code === 'Space') e.preventDefault();
   if (keys.has(e.code)) return;
+  if (game && (e.code === 'KeyP' || e.code === 'Escape')) {
+    // leaving pointer lock with Esc pauses already; the same Esc arriving
+    // a moment later must not resume
+    if (!paused) pause();
+    else if (performance.now() - pausedAt > 300) resume();
+    return;
+  }
   if (e.code === 'KeyP') {
-    if (game) endGame(true);
-    else if (menu.open) menu.hide();
+    if (menu.open) menu.hide();
     else menu.show();
     return;
   }
-  if (menu.open) return;
+  if (menu.open || paused) return;
   keys.add(e.code);
   switch (e.code) {
     // Modes sit on the number row so R and F are free for looking up and down.
@@ -367,6 +433,8 @@ document.getElementById('goShare')!.addEventListener('click', async () => {
 });
 document.addEventListener('pointerlockchange', () => {
   pointerLocked = document.pointerLockElement === renderer.domElement;
+  // Esc releases the mouse before the page ever sees the key
+  if (!pointerLocked && game?.state === 'play') pause();
 });
 /** Turn the view by pixel deltas: the mouse, or a finger dragging. */
 function look(dx: number, dy: number): void {
@@ -386,14 +454,14 @@ const MOVES = ['foot', 'bike', 'scooter', 'car'] as const;
 const touch = touchDevice ? new TouchControls(look, [
   { label: '⏸', code: 'KeyP' },
   { label: '🎥', code: 'KeyC' },
-  // the next way of getting around this game allows
+  // the next way of getting around this game allows; none when there is no choice
   { label: '🚲', code: () => {
     const allowed = MOVES.filter((m) => !game || game.allows(m));
     const next = allowed[(allowed.indexOf(player.mode as typeof MOVES[number]) + 1) % allowed.length];
     return `Digit${MOVES.indexOf(next) + 1}`;
-  } },
-  { label: '⤒', code: 'Space' },
-]) : null;
+  }, show: () => !player.sleigh && MOVES.filter((m) => !game || game.allows(m)).length > 1 },
+  { label: '⤒', code: 'Space', show: () => !player.sleigh && !player.vehicle },
+], (push) => { player.stick = push; }) : null;
 let touchShown = true;
 
 /**
@@ -444,28 +512,7 @@ for (const o of [avatar, bike, scooter]) {
   o.traverse((c) => { if ((c as THREE.Mesh).isMesh) c.castShadow = true; });
 }
 
-const car = new THREE.Group();
-{
-  const body = new THREE.Mesh(
-    new THREE.BoxGeometry(1.85, 0.72, 4.3),
-    new THREE.MeshStandardMaterial({ color: 0xd8503c, roughness: 0.35, metalness: 0.3 }),
-  );
-  body.position.y = 0.62;
-  const roof = new THREE.Mesh(
-    new THREE.BoxGeometry(1.66, 0.62, 2.1),
-    new THREE.MeshStandardMaterial({ color: 0x2a2f3a, roughness: 0.15, metalness: 0.6 }),
-  );
-  roof.position.set(0, 1.26, -0.18);
-  car.add(body, roof);
-  const wheelGeo = new THREE.CylinderGeometry(0.36, 0.36, 0.26, 10);
-  const wheelMat = new THREE.MeshStandardMaterial({ color: 0x14161c, roughness: 0.9 });
-  for (const [wx, wz] of [[-0.92, 1.42], [0.92, 1.42], [-0.92, -1.42], [0.92, -1.42]]) {
-    const wheel = new THREE.Mesh(wheelGeo, wheelMat);
-    wheel.rotation.z = Math.PI / 2;
-    wheel.position.set(wx, 0.36, wz);
-    car.add(wheel);
-  }
-}
+const car = makeCar();
 car.traverse((c) => { if ((c as THREE.Mesh).isMesh) c.castShadow = true; });
 scene.add(car);
 
@@ -492,12 +539,14 @@ function frame(now: number): void {
   world.update(player.pos.x, player.pos.z);
   const wasFlying = player.flying;
   // the menu pauses play, and nobody moves before the countdown says go
-  if (!menu.open && game?.state !== 'countdown') player.update(dt, keys);
-  if (touch && touchShown === menu.open) {
-    touchShown = !menu.open;
+  const held = menu.open || paused;
+  if (!held && game?.state !== 'countdown') player.update(dt, keys);
+  if (touch && touchShown === held) {
+    touchShown = !held;
     touch.visible = touchShown;
   }
-  if (game && !menu.open) {
+  touch?.refresh();
+  if (game && !held) {
     game.update(dt);
     if (game.state === 'over') endGame(false);
   }
@@ -510,7 +559,8 @@ function frame(now: number): void {
   // --- character, vehicle and pose -------------------------------------
   const firstPerson = player.camMode === 2;
   const show = !player.flying && !firstPerson && !player.sleigh;
-  avatar.visible = show;
+  // in the car the tinted cabin hides the driver, whose head would poke through the roof
+  avatar.visible = show && player.mode !== 'car';
   bike.visible = show && player.mode === 'bike';
   scooter.visible = show && player.mode === 'scooter';
   car.visible = !player.flying && !player.sleigh && player.mode === 'car';
@@ -533,6 +583,8 @@ function frame(now: number): void {
     const phase = player.stridePhase;
     if (player.mode === 'car') {
       poseDrive(avatar);
+      // a 0.36 m wheel turns 2.8 rad a metre; the phase runs 2π per 4 m stride
+      for (const wl of car.userData.wheels) wl.rotation.x = player.stridePhase * 1.77;
       avatar.position.y = py + 0.12;
       avatar.position.x = px - Math.cos(facing) * 0.34;
       avatar.position.z = pz + Math.sin(facing) * 0.34;
@@ -541,6 +593,7 @@ function frame(now: number): void {
       bike.rotation.z = player.lean;
       avatar.rotation.z = player.lean;
       for (const wl of bike.userData.wheels) wl.rotation.x = phase * 0.9;
+      bike.userData.crank.rotation.x = phase;
     } else if (player.mode === 'scooter') {
       poseScoot(avatar, acc);
       scooter.rotation.z = player.lean * 0.6;
@@ -556,15 +609,17 @@ function frame(now: number): void {
   }
 
   nightMix += (night - nightMix) * Math.min(1, dt * 2.5);
-  const fogColor = FOG_DAY.clone().lerp(FOG_NIGHT, nightMix);
+  // scratch colours, not new ones: a phone's garbage collector stutters
+  const fogColor = FOG_SCRATCH.lerpColors(FOG_DAY, FOG_NIGHT, nightMix);
   // Haze is tuned for standing in a street canyon; from the air it just erases
   // the city. Push it out with height above the ground so a flyover stays
   // crisp while street level keeps its depth.
   const agl = Math.max(0, player.pos.y - world.height(player.pos.x, player.pos.z));
   const lift = 1 + Math.min(agl, 900) / 90;
   // ... but never past the edge of what has been loaded
-  const far = Math.min((player.inCar ? 1300 : 1100) * lift, world.viewLimit);
-  const near = Math.min(260 * lift, far * 0.5);
+  // a phone holds full detail only close by (quality.ts): its fog is nearer
+  const far = Math.min((player.inCar ? 1300 : 1100) * (LOW ? 0.5 : 1) * lift, world.viewLimit);
+  const near = Math.min((LOW ? 150 : 260) * lift, far * 0.5);
   fog.color.copy(fogColor);
   fog.near = near;
   fog.far = far;
@@ -578,7 +633,7 @@ function frame(now: number): void {
   // sun and sky light fade together; the shadow box re-centres on the
   // player in whole texels, so shadow edges do not shimmer as you move
   sun.intensity = 2.6 * (1 - nightMix) + 0.08;
-  sun.color.setHex(0xfff1dc).lerp(new THREE.Color(0x8aa0d0), nightMix);
+  sun.color.setHex(0xfff1dc).lerp(SUN_NIGHT, nightMix);
   hemi.intensity = hemiDay * (1 - nightMix) + 0.12;
   scene.environmentIntensity = envDay * (1 - nightMix) + 0.1 * nightMix;
   renderer.toneMappingExposure = 1.0 - nightMix * 0.25;

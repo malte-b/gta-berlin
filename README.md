@@ -45,13 +45,17 @@ with the steps below and commit the result.
 | `G` | shadows on / off |
 | `T` | labels · `L` data layers · `M` minimap zoom · `X` respawn |
 | link | copies a URL pointing at exactly where you are standing |
-| `P` | game modes (and, during a game, give up) |
+| `P` | game modes; during a game `P` or `Esc` pauses, with resume, restart and quit |
 
 On a phone or tablet (a coarse pointer) the keyboard help gives way to touch
 controls: a virtual joystick on the left half ([nipplejs](https://github.com/yoannmoinet/nipplejs);
 push it to the edge to sprint), drag on the right half to look, and buttons
-for the menu, camera, vehicle and jump. Shadows start off there; the frame
-budget is tighter.
+for the menu, camera, vehicle and jump (only those that do something right
+now). Shadows start off there, and a phone runs a lower quality tier
+(`web/src/quality.ts`; `?quality=low|high` to choose): full detail close by
+only, half-size textures and nearer fog, so that the tab stays within what
+iOS allows it before reloading. `npm run bench:games` measures each game as
+a phone; see `docs/performance.md`.
 
 ---
 
@@ -163,6 +167,18 @@ VITE_TILE_BASE=https://s3.example.berlin/gta-berlin/ npm run build
   variables to use the bucket in production. Without it, the game uses the
   local `data/berlin/` and falls back to the committed area.
 
+### Scores
+
+Scores live in the browser for now (`web/src/scores.ts`). A run is plain
+data - mode, course seed, points, targets, medal, best combo, time - so a
+shared board can take the same record later: a small API in front of a
+Postgres table on the Datahub (the browser never talks to Postgres
+directly), `POST /runs` to submit and `GET /runs?mode=&seed=&limit=` for
+a course's top list. A shared board needs what a local one does not: a
+player name or pseudonym rather than any account data, rate limits, and a
+plausibility check on the server - a 60 s Döner run with 40 targets did not
+happen - since anyone can send any number.
+
 ### Data layers
 
 Other datasets appear in the city as labelled pins. `L` opens the panel, where
@@ -215,8 +231,30 @@ python3 pipeline/build_games.py      # writes web/public/data/games/ (needs buil
   playing on the same day gets the same start; 🎲 rolls a new course, and 📍
   plays where you stand, unranked. `#play=<mode>:<seed>` in the URL offers a
   course as a challenge, and the result screen copies that link.
-* **Best scores are per course** and kept in the browser's local storage.
-  There is no shared leaderboard yet.
+* **Points, combos and gold.** Each target is worth 100 points. Reaching the
+  next one before the combo bar runs out (10–40 s, by mode) multiplies that,
+  up to ×5. About one target in fourteen is golden: triple points and double
+  time. Which ones is a hash of where they are, so a course has the same
+  golden targets for everyone. Market, Döner and watering runs give seconds
+  back per target (fewer as the run goes on); Hitzewelle pays 1,000 points
+  for surviving, Klo-Notstand 25 per second to spare.
+* **Medals** 🥉 🥈 🥇 mark how far a run got: by targets reached in most
+  modes, by time to spare for the toilets, by cool-offs on top of surviving
+  for the heat. The panel shows what the next one needs.
+* **Best scores are per course** and kept in the browser's local storage, as
+  points (`berlin.points.*`; the earlier target counts are not compared). A
+  ranked run shows the course record to beat and announces passing it.
+* **My high scores** on the start screen: record, today's best, games and
+  medals per mode, and the latest games. Every finished game is kept as a
+  run in `berlin.runs` (the newest 300), by `web/src/scores.ts`.
+* **Pause:** `Esc`, `P` or the ⏸ button pause a game, with resume, restart
+  and quit; so does switching tabs or apps.
+* **Faster than free roam:** walking and riding run at 1.6× in a game (the
+  sleigh at 1.3×, the car as it is), since targets lie hundreds of metres
+  apart. Movement is stepped in half metres, so the speed cannot carry you
+  through a wall on a slow frame.
+* **Distances** hang under every game target's pin, rounded to 5 m close
+  up, 10 m further out, then 0.1 km.
 * **German first.** The whole interface is German by default, with English
   one click away on the start screen (or `?lang=en`); the choice is
   remembered. Strings live in `web/src/i18n.ts`; names from the datasets stay
@@ -352,7 +390,14 @@ own (`bridges.py`):
   street below. In between, the median of the returns near the line between
   the ends counts, so lamp posts, catenary, lorries and the bracing of a
   truss bridge do not lift it. Under station halls and platform roofs the
-  upper returns are the roof, so they are ignored there.
+  upper returns are the roof, so they are ignored there. Where OSM says the
+  structure stands above the deck (`bridge:structure` arch, truss,
+  suspension, cable-stayed) and the street at an end lies more than 4.5 m
+  below what the middle returns, those returns are the structure, and the
+  deck runs between the streets instead (Eiswerderbrücke). Smoothing keeps
+  the pinned ends where they are, and a deck resting on the ground at both
+  ends dips at most 0.3 m below the lower one: a deeper dip is the water or
+  the bank under a footbridge the scan barely saw.
 * **Underneath:** returns at deck height are dropped before hole filling, so
   the river or the cutting carries on below. Under the last few metres at
   each abutment the terrain is lifted to the deck, so road and bridge meet
@@ -361,6 +406,28 @@ own (`bridges.py`):
   ground cover, and where nothing is mapped under a deck the cover continues
   from beside it - the river under a river bridge. The orthophoto shows the
   deck's top, so the ground under a deck keeps its own material instead.
+* **Onto the ground:** the game lets you off a deck only onto ground the
+  navigation grid passes within a step of the deck, and a car only onto
+  drivable ground. Once a tile is built, `landings.py` makes sure there is
+  some:
+  * the drivable mask is the walkable one shrunk by the car's 2 m clearance,
+    and the bank or water under a deck's end is not walkable - which closed
+    a 2 m band of street round every road bridge. A road deck counts as room
+    for the car, and that band is drivable again;
+  * beyond a deck's end there is often a strip of steep, closed bank before
+    the street, so each free end of a road or path deck is carried on, as a
+    ramp, to the first ground within 12 m where the player's probe finds
+    room (a car's, for a road) - never under water, and not where another
+    deck already carries on;
+  * no deck lies under the water it crosses.
+
+  For an existing build: `python3 pipeline/landings.py data/berlin`
+  (a minute; `--redo` takes back an earlier run's ramps first). It bumps the
+  changed tiles' versions in `world.json`.
+* **Checked by flooding:** `node scripts/check.ts --dir data/berlin` floods
+  every bridge by the game's own movement rules and reports the ones you
+  cannot cross on foot or by car, and deck ends with no ground at their
+  level, each with a picture of the flood.
 * **In the game:** each deck is a slab with the orthophoto on top, like the
   roofs. Street furniture within 2 m of a road or path deck stands on it.
   Height and movement checks take the player's height into account: you can
@@ -381,6 +448,14 @@ mask eroded by 2 m.
 The spawn is a pavement beside a street, in the largest connected region, with
 open sky around it — or the spot pinned with `set_spawn.py`, which survives
 rebuilds as long as it is still walkable.
+
+Everywhere else the game puts you down - an address, a shared link, a game's
+start, a change of vehicle - it looks for ground that leads somewhere: the
+nearest walkable cell is flood-filled, and only taken if its region reaches
+160 m away (or the edge of what is loaded). The pipeline keeps every region
+over 400 m², so the nearest ground to an address point inside a block is
+often a walled-in Hinterhof; such regions are skipped and the search moves
+outward to the street.
 
 ### Rendering
 

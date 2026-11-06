@@ -220,3 +220,62 @@ are about as small as JPEGs to download, so they do not change this much.
 * The simple distant buildings from point 3 are one call per tile.
 
 Expected: 670-1,660 calls down to ~150-400.
+
+## Game modes on a phone (2026-10-29)
+
+On an iPhone the games could not be finished: iOS reloaded the page partway
+through, which is what Safari does to a tab that takes too much memory.
+`npm run bench:games` (`scripts/games-bench.ts`) now plays each game the way a
+phone would: 390 × 844 at 3×, touch emulation (so the touch UI is on), the CPU
+4× slower, an autopilot holding forward and sprint through the joystick's key
+events and steering at the compass target, on one fixed course per mode. It
+samples memory every 4 s while playing and reports the peak; `--landscape`,
+`--desktop`, `--shots`, `--snapshot` (a heap snapshot by constructor) are
+options. Raw results: `docs/bench/2-games-*.json`.
+
+| Phone, 40 s per game | Döner | Heat | Watering | Toilets | Markets (sleigh) |
+|---|---|---|---|---|---|
+| **Peak memory** (textures + geometry + JS heap) | **1,608 → 804 MB** | **1,483 → 696 MB** | **1,435 → 709 MB** | **1,321 → 702 MB** | **1,630 → 792 MB** |
+| Texture memory | 605 → 179 MB | 612 → 149 MB | 492 → 130 MB | 531 → 137 MB | 677 → 177 MB |
+| Frame rate | 60 → 134 | 56 → 120 | 66 → 130 | 72 → 176 | 39 → 70 |
+| Frames over 50 ms | 13 → 5 | 18 → 10 | 27 → 6 | 6 → 4 | 65 → 51 |
+| Worst frame | 288 → 112 ms | 259 → 176 ms | 219 → 115 ms | 150 → 96 ms | 467 → 378 ms |
+| Downloaded | 103 → 42 MB | 136 → 70 MB | 187 → 52 MB | 93 → 23 MB | 338 → 246 MB |
+| Style + layout per frame | 0.94 → 0.13 ms | 1.04 → 0.05 ms | 0.94 → 0.04 ms | 1.24 → 0.08 ms | 0.99 → 0.26 ms |
+
+The "after" runs cover more ground (games now run at 1.6× speed), so they
+are, if anything, the harder test. Peak memory includes garbage the collector
+had not yet reached; after a forced collection the JS heap holds 160-310 MB.
+
+What changed:
+
+* **A quality tier** (`web/src/quality.ts`): a coarse pointer, i.e. a finger,
+  gets `LOW`; `?quality=low|high` overrides. It holds full detail within
+  380 m instead of 800 m (dropped past 540 m instead of 1,100), distant tiles
+  to 1.4 km instead of 2.6 km, swaps 20 cm photos in within 180 m instead of
+  320 m, and takes the 50 cm photo and cover mask at half size. The fog
+  closes in to match. Draws at 1.5× pixel density instead of 2× and without
+  MSAA; a 2,048 shadow map if shadows are switched on.
+* **Facade and ground textures at 512 px** on `LOW` (`shrinkTextures()` in
+  `memory.ts`), scaled once before they are shared between tiles: OSM2World's
+  1,024 px facades were 5.6 MB each on the GPU, and over a hundred MB in all.
+* **The HUD writes the DOM only when something changed**, and the bars move by
+  transform: the game panel used to be rewritten every frame, which made the
+  page restyle and relayout every frame. The free-roam readouts update four
+  times a second, the minimap every other frame on a phone.
+* **No backdrop blur on a phone**: a blurred panel over a moving 3D scene is
+  re-blurred every frame by the GPU (not visible in these numbers: the GPU is
+  the Mac's).
+* Smaller things: 1,500 snowflakes instead of 5,000 on `LOW`, no per-frame
+  colour allocations in the frame loop, one shared name string per tree age
+  in the watering game (80,000 young trees).
+
+Still open:
+
+* **The sleigh streams too much**: 246 MB in 40 s, since it crosses 5 km of
+  full-detail city at 125 m/s, and its frame times suffer for it. Smaller tile
+  files (point 4 above) and simple distant buildings (point 3) are the fix.
+* **A real iPhone** has to confirm this. Safari's limit is not published and
+  varies by model; the emulation runs Chrome on the Mac's GPU, and the texture
+  and geometry figures are estimates from the scene, not the driver's own
+  accounting.

@@ -84,10 +84,23 @@ export class Decks {
       const len2 = ex * ex + ez * ez;
       if (len2 < 1e-9) continue;
       const t = ((x - ax) * ex + (z - az) * ez) / len2;
-      if (t < 0 || t > 1) continue;
       const l = Math.sqrt(len2);
       // how far to the left of the line, (-ez, ex) being left
       const side = ((x - ax - ex * t) * -ez + (z - az - ez * t) * ex) / l;
+      if (t < 0) continue;
+      if (t > 1) {
+        // Past this segment and short of the next: the outside of a bend,
+        // which neither covers but the slab's mitred edge does - a hole to
+        // get stuck in on a winding footbridge. Closed with the corner's
+        // disc, as wide as the deck there.
+        if (i + 2 >= d.p.length) continue;
+        const [cx, cz] = d.p[i + 2];
+        if ((x - bx) * (cx - bx) + (z - bz) * (cz - bz) >= 0) continue;
+        if (Math.hypot(x - bx, z - bz) <= (side > 0 ? bl : br) - inset) {
+          out.push({ y: by + LIFT[d.k], kind: d.k, dx: ex / l, dz: ez / l });
+        }
+        continue;
+      }
       const left = al + (bl - al) * t - inset, right = ar + (br - ar) * t - inset;
       if (side <= left && -side <= right) {
         out.push({ y: ay + (by - ay) * t + LIFT[d.k], kind: d.k, dx: ex / l, dz: ez / l });

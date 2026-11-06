@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { num } from './i18n';
 import type { PointLayer } from './layers';
 import type { World } from './world';
 
@@ -22,7 +23,7 @@ interface Poi { x: number; z: number; n: string; c: Category }
 interface StreetSpot { x: number; z: number; a: number }
 interface Street { name: string; major: boolean; at: StreetSpot[] }
 interface PoiData { streets: Street[]; pois: Poi[] }
-interface Label { tex: THREE.CanvasTexture; w: number; h: number }
+export interface Label { tex: THREE.CanvasTexture; w: number; h: number }
 
 const CATEGORY_STYLE: Record<Category, { colour: string; dot: number; label: string }> = {
   refresh: { colour: '#5ec8e5', dot: 0x5ec8e5, label: 'refreshment' },
@@ -87,6 +88,29 @@ function labelTexture(text: string, colour: string, scale = 1, sub = ''): Label 
   return { tex, w, h };
 }
 
+/**
+ * How far away something is, as a small plate: "40 m", "350 m", "1,2 km".
+ * Rounded coarser the further it is, so the handful of plates in use are
+ * drawn once and then shared by every game beacon.
+ */
+const distCache = new Map<string, Label>();
+export function distanceText(m: number): string {
+  if (m < 1000) {
+    const step = m < 100 ? 5 : 10;
+    return `${Math.max(step, Math.round(m / step) * step)} m`;
+  }
+  return `${num(m / 1000)} km`;
+}
+export function distanceLabel(m: number): Label {
+  const text = distanceText(m);
+  let l = distCache.get(text);
+  if (!l) {
+    l = labelTexture(text, '#e8e6e1', 0.8);
+    distCache.set(text, l);
+  }
+  return l;
+}
+
 function streetTexture(text: string): Label {
   const font = '700 40px ui-monospace, Menlo, monospace';
   const probe = document.createElement('canvas').getContext('2d')!;
@@ -111,6 +135,17 @@ function streetTexture(text: string): Label {
   tex.minFilter = THREE.LinearMipmapLinearFilter;
   tex.needsUpdate = true;
   return { tex, w, h };
+}
+
+/** Point a distance plate at the label for m metres; `scale` is per pixel. */
+export function setDistance(spr: THREE.Sprite, m: number, scale: number): void {
+  const l = distanceLabel(m);
+  const mat = spr.material;
+  if (mat.map !== l.tex) {
+    mat.map = l.tex;
+    mat.needsUpdate = true;
+  }
+  spr.scale.set(l.w * scale, l.h * scale, 1);
 }
 
 export class PoiLayer {

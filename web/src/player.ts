@@ -3,6 +3,11 @@ import type { World } from './world';
 
 const GRAVITY = 24.0;
 const JUMP = 8.2;
+/** On foot with a touch joystick: a walk at the least push, the jog of
+ *  cruise when pushed this far, from STICK_WALK up. */
+const WALK = 1.5;
+const STICK_WALK = 0.3;
+const STICK_JOG = 0.8;
 
 // Turning on the keyboard, so the whole game is playable with one hand.
 const TURN_RATE = 1.9;          // radians per second
@@ -24,7 +29,9 @@ const LAND_COOLDOWN = 0.5;      // stops an immediate re-launch on touchdown
  * `nav` picks which mask in the navigation grid a mode is tested against: a
  * car needs the eroded drivable mask, while a person, a bike and a scooter all
  * fit anywhere you can stand. `stride` is how many metres of travel make one
- * full animation cycle, so limbs stay locked to the ground at any speed.
+ * full animation cycle, so limbs stay locked to the ground at any speed. On
+ * foot that is the stride of a walk: a run's is longer, so the steps do not
+ * turn into a blur (see updateFoot).
  */
 export type Mode = 'foot' | 'bike' | 'scooter' | 'car';
 
@@ -76,6 +83,13 @@ export class Player {
   flying = false;
   launched = false;
   strideDist = 0;       // metres travelled, drives the animation phase
+  private footPhase = 0; // on foot, the phase itself: the stride grows with speed
+  /**
+   * How far a touch joystick is pushed, 0 to 1, or null with keys. On foot
+   * it sets the pace: a little walks, more jogs, the edge (which also holds
+   * Shift) sprints.
+   */
+  stick: number | null = null;
   lean = 0;
   takeoffCooldown = 0;
   justLanded = 0;
@@ -104,7 +118,9 @@ export class Player {
       : Math.hypot(this.vel.x, this.vel.z) * 3.6;
   }
 
-  get stridePhase() { return (this.strideDist / this.cfg.stride) * Math.PI * 2; }
+  get stridePhase() {
+    return this.mode === 'foot' ? this.footPhase : (this.strideDist / this.cfg.stride) * Math.PI * 2;
+  }
 
   spawn(x: number, z: number): void {
     const w = this.world;
@@ -141,6 +157,17 @@ export class Player {
 
   /** Move to (nx, nz) if allowed, sliding along whichever axis is free. */
   private move(nx: number, nz: number): boolean {
+    // In half-metre steps: fast in a game, on a slow phone frame, one jump
+    // could clear a thin wall of the 1 m grid.
+    const dx = nx - this.pos.x, dz = nz - this.pos.z;
+    const n = Math.ceil(Math.hypot(dx, dz) / 0.5);
+    if (n <= 1) return this.step(nx, nz);
+    let hit = false;
+    for (let i = 0; i < n; i++) hit = this.step(this.pos.x + dx / n, this.pos.z + dz / n) || hit;
+    return hit;
+  }
+
+  private step(nx: number, nz: number): boolean {
     // The navigation grid already accounts for body clearance, so only a small
     // cross is probed here. Sampling a wide ring would re-introduce exactly the
     // invisible walls the grid exists to remove.
@@ -204,8 +231,11 @@ export class Player {
     if (keys.has('KeyA')) fx -= 1;
     if (keys.has('KeyD')) fx += 1;
     const len = Math.hypot(fx, fz);
-    const speed = ((keys.has('ShiftLeft') || keys.has('ShiftRight'))
-      ? cfg.sprint : cfg.cruise) * this.speedScale;
+    const sprinting = keys.has('ShiftLeft') || keys.has('ShiftRight');
+    const pace = sprinting ? cfg.sprint
+      : this.stick === null ? cfg.cruise
+      : WALK + (cfg.cruise - WALK) * Math.min(1, Math.max(0, (this.stick - STICK_WALK) / (STICK_JOG - STICK_WALK)));
+    const speed = pace * this.speedScale;
 
     let vx = 0, vz = 0;
     if (len > 0) {
@@ -228,7 +258,12 @@ export class Player {
 
     const before = { x: this.pos.x, z: this.pos.z };
     this.move(this.pos.x + vx * dt, this.pos.z + vz * dt);
-    this.strideDist += Math.hypot(this.pos.x - before.x, this.pos.z - before.z);
+    const moved = Math.hypot(this.pos.x - before.x, this.pos.z - before.z);
+    this.strideDist += moved;
+    // people lengthen their stride as they speed up: 1.6 m a cycle walking,
+    // about 2.9 m at a jog (cruise), 4.8 m flat out - two to three steps a
+    // second instead of five to eleven on one fixed stride
+    this.footPhase += moved / (cfg.stride * (0.62 + 0.26 * Math.hypot(vx, vz))) * Math.PI * 2;
     this.pos.y += this.vel.y * dt;
 
     const g = w.height(this.pos.x, this.pos.z, this.pos.y);
@@ -323,8 +358,8 @@ export class Player {
    */
   private updateSleigh(dt: number, keys: Set<string>): void {
     const boost = keys.has('ShiftLeft') || keys.has('ShiftRight');
-    const want = boost ? SLEIGH_BOOST : keys.has('KeyW') ? SLEIGH_FAST
-      : keys.has('KeyS') ? SLEIGH_SLOW : SLEIGH_CRUISE;
+    const want = (boost ? SLEIGH_BOOST : keys.has('KeyW') ? SLEIGH_FAST
+      : keys.has('KeyS') ? SLEIGH_SLOW : SLEIGH_CRUISE) * this.speedScale;
     this.sleighSpeed += (want - this.sleighSpeed) * Math.min(1, dt * 1.6);
     const steer = (keys.has('KeyA') ? 1 : 0) - (keys.has('KeyD') ? 1 : 0) + this.turnInput(keys);
     this.yaw += Math.max(-1, Math.min(1, steer)) * 1.25 * dt;
@@ -370,7 +405,7 @@ export class Player {
     this.launched = false;
     this.takeoffCooldown = LAND_COOLDOWN;
     this.justLanded = 0.9;
-    this.settle(60);
+    this.settle(60, false);
     this.vel.set(0, 0, 0);
     this.onGround = true;
     // level the view off so you are not left staring at the sky
@@ -392,17 +427,19 @@ export class Player {
   /**
    * Come to rest on whatever is below: a bridge deck where you are over one
    * (one a car can use, when driving), otherwise the nearest ground the
-   * current mode can use, up to maxR metres away.
+   * current mode can use, up to maxR metres away. Unless `open` is false -
+   * a landing, aimed by the player - that ground has to lead out of the
+   * block: switching vehicles must not leave you walled into a courtyard.
    */
-  private settle(maxR: number): void {
+  private settle(maxR: number, open = true): void {
     const w = this.world;
     const y = w.height(this.pos.x, this.pos.z, this.pos.y);
-    const deck = w.deckAt(this.pos.x, this.pos.z, y, this.driving ? 1.0 : 0.3);
-    if (deck && (!this.driving || deck.kind !== 'path')) {
+    if (w.deckAt(this.pos.x, this.pos.z, y, this.driving ? 1.0 : 0.3, this.driving)) {
       this.pos.y = y;
       return;
     }
-    const spot = w.nav.nearestPassable(this.pos.x, this.pos.z, this.driving, maxR);
+    const spot = open ? w.freeSpot(this.pos.x, this.pos.z, maxR, this.driving)
+      : w.nav.nearestPassable(this.pos.x, this.pos.z, this.driving, maxR);
     if (spot) { this.pos.x = spot[0]; this.pos.z = spot[1]; }
     this.pos.y = w.height(this.pos.x, this.pos.z);
   }

@@ -51,6 +51,15 @@ ABUT_LAND = (1, 6)       # metres behind an abutment where the road rests on the
 ABUT_RISE = 1.5          # ... at most this far from the deck's level, or the slope allows
 ABUT_AGREE = 0.5         # ... and this close to the deck's own surface at that end
 LAND_RUN = 3.0           # metres a deck resting on an abutment runs on over the ground
+SAG = 0.3                # a deck on two abutments dips at most this far below the lower one
+CLIFF = 1.0              # a rise steeper than this between two stations splits the deck
+# bridge:structure values with the structure standing above the deck: the
+# scan's returns along the bridge are the arch or the truss, metres up
+THROUGH = {"arch", "truss", "suspension", "cable-stayed", "tied-arch", "bowstring"}
+
+
+def _through(tags):
+    return bool(THROUGH & set(tags.get("bridge:structure", "").replace(" ", "").split(";")))
 
 
 def _query(bb):
@@ -122,19 +131,21 @@ def _layer(tags):
 
 def _chains(ways):
     """Join ways of one kind and layer that continue each other end to end.
-    ways: [(kind, layer, [(x, z, hw), ...])]. Returns [(kind, points, joints)],
-    joints telling for head and tail whether another bridge goes on from
-    there - a fork in mid-air rather than an abutment on the ground."""
+    ways: [(kind, layer, [(x, z, hw), ...], through)]. Returns [(kind, points,
+    joints, layer, through)], joints telling for head and tail whether another
+    bridge goes on from there - a fork in mid-air rather than an abutment on
+    the ground - and through whether any of its ways has its structure above
+    the deck."""
     def key(p):
         return (round(p[0], 1), round(p[1], 1))
     ends, anywhere = {}, {}
-    for i, (kind, layer, pts) in enumerate(ways):
+    for i, (kind, layer, pts, _t) in enumerate(ways):
         for p in (pts[0], pts[-1]):
             ends.setdefault((kind, layer, key(p)), []).append(i)
             anywhere.setdefault(key(p), set()).add(i)
     used = [False] * len(ways)
     out = []
-    for i, (kind, layer, pts) in enumerate(ways):
+    for i, (kind, layer, pts, _t) in enumerate(ways):
         if used[i]:
             continue
         used[i] = True
@@ -157,7 +168,7 @@ def _chains(ways):
                 else:
                     chain = q[::-1][:-1] + chain
         joints = tuple(bool(anywhere.get(key(p), set()) - members) for p in (chain[0], chain[-1]))
-        out.append((kind, chain, joints, layer))
+        out.append((kind, chain, joints, layer, any(ways[m][3] for m in members)))
     return out
 
 
@@ -346,13 +357,15 @@ def decks(data, ground, top, grid, covered=None, cadastre=(), abutments=()):
             o += 1.0
         return vals
 
-    ways, outlines = [], []
+    ways, outlines, through = [], [], []
     for el in data.get("elements", []):
         tags = el.get("tags", {})
         if tags.get("man_made") == "bridge" and el.get("type") == "way":
             pts = groundcover._pts(el.get("geometry", []))
             if len(pts) >= 4 and abs(pts[0][0] - pts[-1][0]) + abs(pts[0][1] - pts[-1][1]) < 0.05:
                 outlines.append(pts[:-1])
+                if _through(tags):
+                    through.append(pts[:-1])
             continue
         kind = kind_of(tags) if el.get("type") == "way" else None
         if not kind:
@@ -361,11 +374,14 @@ def decks(data, ground, top, grid, covered=None, cadastre=(), abutments=()):
         if len(pts) < 2:
             continue
         hw = half_width(tags, kind)
-        ways.append((kind, _layer(tags), [(x, z, hw) for x, z in pts]))
+        # an arch or truss bridge says so on its way or on its outline
+        mx, mz = pts[len(pts) // 2] if len(pts) > 2 else ((pts[0][0] + pts[1][0]) / 2, (pts[0][1] + pts[1][1]) / 2)
+        ways.append((kind, _layer(tags), [(x, z, hw) for x, z in pts],
+                     _through(tags) or any(_inside(o, mx, mz) for o in through)))
 
     lines = _Lines(abutments) if abutments else None
     out = []
-    for kind, chain, joints, layer in _chains(ways):
+    for kind, chain, joints, layer, over in _chains(ways):
         st = _stations(chain)
         if len(st) < 3:
             continue
@@ -375,6 +391,19 @@ def decks(data, ground, top, grid, covered=None, cadastre=(), abutments=()):
         mid = st[n * 15 // 100:max(n * 85 // 100, n * 15 // 100 + 1)]
         level = _median([v for x, z, dx, dz, hw in mid for src in (ground, top)
                          for v in section(x, z, dx, dz, max(1.0, hw * 0.4), src)])
+        if over and level is not None:
+            # An arch or a truss: what the bridge returns along its middle is
+            # the structure, metres above the road (Eiswerderbruecke). Where
+            # the streets at its ends lie that far below, the deck runs
+            # between them, and the scan only refines it near that line.
+            streets = []
+            for end in (0, -1):
+                vals = [v for x, z, dx, dz, hw in _beyond(st, end) for v in section(x, z, dx, dz, hw, ground)]
+                streets.append(_median(vals) if len(vals) >= 3 else None)
+            # one end may lie past the working area's edge: the other says enough
+            known = [v for v in streets if v is not None]
+            if known and level - max(known) > LEVEL_GAP:
+                level = None
 
         def centre(part):
             return [v for x, z, dx, dz, hw in part for src in (ground, top)
@@ -454,6 +483,15 @@ def decks(data, ground, top, grid, covered=None, cadastre=(), abutments=()):
             if not joints[1] or got[-1] is None:
                 got[-1] = zb
             line = _smooth(_interp(got))
+            # smoothing must not carry the pinned ends off their abutments:
+            # averaged with the low returns beside them, a footbridge's ends
+            # came out a metre under the banks it rests on
+            line[0], line[-1] = got[0], got[-1]
+        if not joints[0] and not joints[1]:
+            # resting on the ground at both ends, a deck runs straight or
+            # arches up; a dip below both ends is the water or the bank under it
+            floor = min(line[0], line[-1]) - SAG
+            line = [max(v, floor) for v in line]
         line = _limit_slope(line, MAX_SLOPE[kind])
         if line is None:
             continue
@@ -484,7 +522,32 @@ def decks(data, ground, top, grid, covered=None, cadastre=(), abutments=()):
             cz = sum(p[1] for p in poly) / len(poly)
             return any(_inside(c, cx, cz) for c in cadastre)
         outlines = list(cadastre) + [o for o in outlines if not covered_by_cadastre(o)]
-    return _close_gaps(_fill_outlines(out, outlines))
+    return _split_cliffs(_close_gaps(_fill_outlines(out, outlines)))
+
+
+def _split_cliffs(dks):
+    """No deck has a wall in it: where two neighbouring stations differ in
+    height by more than CLIFF times their distance (and more than a step), the
+    piece is two decks at their own levels - a stub left between a street and
+    the bridge above it would otherwise join them with a 5 m step."""
+    out = []
+    for dk in dks:
+        st = dk["st"]
+        runs, start = [], 0
+        for i in range(len(st) - 1):
+            rise = abs(st[i + 1][2] - st[i][2])
+            if rise > 1.0 and rise > CLIFF * math.hypot(st[i + 1][0] - st[i][0], st[i + 1][1] - st[i][1]):
+                runs.append((start, i))
+                start = i + 1
+        runs.append((start, len(st) - 1))
+        if len(runs) == 1:
+            out.append(dk)
+            continue
+        for a, b in runs:
+            if b > a:
+                abut = (dk["abut"][0] and a == 0, dk["abut"][1] and b == len(st) - 1)
+                out.append({**dk, "st": st[a:b + 1], "abut": abut})
+    return out
 
 
 KIND_RANK = {"road": 0, "path": 1, "rail": 2}

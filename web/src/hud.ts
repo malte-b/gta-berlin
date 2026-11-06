@@ -1,6 +1,7 @@
 import { makeFromWorld, type XZ } from './geo';
 import type { Player } from './player';
 import { onLang, t } from './i18n';
+import { LOW } from './quality';
 import type { PoiLayer } from './pois';
 import type { World } from './world';
 
@@ -37,6 +38,11 @@ export class HUD {
   private readonly spans = [180, 420, 1200];
   private zoom = 1;
   private hintTimer = 0;
+  /** Readouts are written a few times a second, and only when they change:
+   *  every DOM write costs a phone a restyle. */
+  private textTimer = 0;
+  private readonly lastText = new Map<HTMLElement, string>();
+  private mapFrame = 0;
   private readonly fromWorld: (x: number, z: number) => XZ;
 
   constructor(world: World) {
@@ -62,7 +68,41 @@ export class HUD {
     this.hintTimer = seconds;
   }
 
+  private write(e: HTMLElement, html: string): void {
+    if (this.lastText.get(e) === html) return;
+    this.lastText.set(e, html);
+    e.innerHTML = html;
+  }
+
   draw(player: Player, dt: number, fps: number, info: RenderInfo): void {
+    if (this.hintTimer > 0) {
+      this.hintTimer -= dt;
+      if (this.hintTimer <= 0) this.hintEl.classList.remove('on');
+    }
+    // a phone redraws the map every other frame; nobody can tell
+    this.mapFrame++;
+    if (!LOW || this.mapFrame % 2 === 0) this.drawMap(player);
+    this.write(this.speedEl, `${Math.round(player.speedKmh)}<span> KM/H</span>`);
+    this.textTimer -= dt;
+    if (this.textTimer > 0) return;
+    this.textTimer = 0.25;
+    const px = player.pos.x, pz = player.pos.z;
+    const [lon, lat] = this.fromWorld(px, pz);
+    this.write(this.placeEl, `${this.area}<small>${lat.toFixed(5)}, ${lon.toFixed(5)}</small>`);
+    // hidden on a phone and during a game
+    if (document.body.classList.contains('touch') || document.body.classList.contains('gaming')) return;
+    const s = this.world.stats;
+    const mode = t(player.sleigh ? 'move.sleigh' : player.flying ? 'move.flying' : `move.${player.mode}`);
+    this.write(this.statsEl,
+      `<b>${fps.toFixed(0)}</b> ${t('hud.fps')} · <b>${info.calls}</b> ${t('hud.draws')} · `
+      + `<b>${(info.triangles / 1e6).toFixed(2)}</b> ${t('hud.tris')}`
+      + `<br><b>${s.buildings}</b> ${t('hud.buildings')} · <b>${s.trees}</b> ${t('hud.trees')}`
+      + (this.world.tiled ? ` · <b>${s.full}</b>/<b>${s.tiles}</b> ${t('hud.tiles')}` : '')
+      + `<br>x <b>${px.toFixed(0)}</b>  z <b>${pz.toFixed(0)}</b>  alt <b>${player.pos.y.toFixed(1)}</b> m`
+      + `<br>${mode}`);
+  }
+
+  private drawMap(player: Player): void {
     const { ctx } = this;
     const size = this.canvas.width;
     const scale = size / this.spans[this.zoom];
@@ -127,25 +167,5 @@ export class HUD {
 
     ctx.strokeStyle = 'rgba(255,255,255,.14)';
     ctx.strokeRect(0.5, 0.5, size - 1, size - 1);
-
-    const [lon, lat] = this.fromWorld(px, pz);
-    this.placeEl.innerHTML =
-      `${this.area}<small>${lat.toFixed(5)}, ${lon.toFixed(5)}</small>`;
-    this.speedEl.innerHTML = `${Math.round(player.speedKmh)}<span> KM/H</span>`;
-
-    const s = this.world.stats;
-    const mode = t(player.sleigh ? 'move.sleigh' : player.flying ? 'move.flying' : `move.${player.mode}`);
-    this.statsEl.innerHTML =
-      `<b>${fps.toFixed(0)}</b> ${t('hud.fps')} · <b>${info.calls}</b> ${t('hud.draws')} · `
-      + `<b>${(info.triangles / 1e6).toFixed(2)}</b> ${t('hud.tris')}`
-      + `<br><b>${s.buildings}</b> ${t('hud.buildings')} · <b>${s.trees}</b> ${t('hud.trees')}`
-      + (this.world.tiled ? ` · <b>${s.full}</b>/<b>${s.tiles}</b> ${t('hud.tiles')}` : '')
-      + `<br>x <b>${px.toFixed(0)}</b>  z <b>${pz.toFixed(0)}</b>  alt <b>${player.pos.y.toFixed(1)}</b> m`
-      + `<br>${mode}`;
-
-    if (this.hintTimer > 0) {
-      this.hintTimer -= dt;
-      if (this.hintTimer <= 0) this.hintEl.classList.remove('on');
-    }
   }
 }

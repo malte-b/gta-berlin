@@ -4,6 +4,8 @@ import type { DeckHit } from './bridges';
 import { setUploader } from './frames';
 import { NavGrid } from './tiles';
 import { t } from './i18n';
+import { closeOnUpload } from './memory';
+import { LOW } from './quality';
 import { Tile, type GroundKind, type SharedGround, type TileManifest } from './tile';
 
 const DATA = 'data/';
@@ -16,12 +18,18 @@ const BERLIN = ((import.meta.env.VITE_TILE_BASE as string | undefined) || 'data/
 // Streaming distances, metres from the player to the nearest edge of a tile.
 // Street level is hazed out by ~1.1 km, so full detail need not reach further;
 // the coarse ring is for the view from the air.
-const FULL_IN = 800;
-const FULL_OUT = 1100;
-const COARSE_IN = 2600;
-const COARSE_OUT = 3200;
+// Full detail within FULL_IN, dropped past FULL_OUT; distant tiles likewise.
+// A phone holds far less (quality.ts): its fog closes in to match.
+const FULL_IN = LOW ? 380 : 800;
+const FULL_OUT = LOW ? 540 : 1100;
+const COARSE_IN = LOW ? 1400 : 2600;
+const COARSE_OUT = LOW ? 1700 : 3200;
 /** How far up a surface may be and still be stepped onto, metres. */
 const STEP_UP = 1.0;
+/** A spawn's ground must reach this far, metres, to count as not walled in;
+ *  more than the span of a Berlin block's courtyards. */
+const OPEN_REACH = 160;
+const STEPS = [[1, 0], [-1, 0], [0, 1], [0, -1]] as const;
 
 /** world.json: either one area (pipeline/build_world.py) or the index of a
  *  tiled build (pipeline/build_berlin.py). */
@@ -132,7 +140,15 @@ export class World {
 
   private async loadShared(): Promise<SharedGround> {
     const loader = new THREE.TextureLoader();
-    const load = (file: string, srgb: boolean) => loader.loadAsync(this.base + file).then((t) => {
+    const load = (file: string, srgb: boolean) => loader.loadAsync(this.base + file).then(async (t) => {
+      // a phone (quality.ts) takes them at 512 px, flipped as three would have
+      if (LOW && t.image.width > 512) {
+        t.image = await createImageBitmap(t.image as HTMLImageElement,
+          { resizeWidth: 512, resizeHeight: Math.round(512 * t.image.height / t.image.width),
+            resizeQuality: 'medium', imageOrientation: 'flipY' });
+        t.flipY = false;
+        closeOnUpload(t);
+      }
       t.wrapS = t.wrapT = THREE.RepeatWrapping;
       t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
       t.anisotropy = this.aniso;
@@ -270,10 +286,11 @@ export class World {
     return best === -Infinity ? g : best;
   }
 
-  /** The deck at (x, z) within a step of height y, if there is one. */
-  deckAt(x: number, z: number, y: number, inset = 0): DeckHit | null {
+  /** The deck at (x, z) within a step of height y, if there is one; with
+   *  `road`, one a car may use - not a path. */
+  deckAt(x: number, z: number, y: number, inset = 0, road = false): DeckHit | null {
     for (const d of this.tileAt(x, z)?.decks?.at(x, z, inset) ?? []) {
-      if (Math.abs(d.y - y) <= STEP_UP) return d;
+      if (Math.abs(d.y - y) <= STEP_UP && !(road && d.kind === 'path')) return d;
     }
     return null;
   }
@@ -328,16 +345,88 @@ export class World {
   canStep(fx: number, fz: number, toX: number, toZ: number, driving = false, y?: number): boolean {
     if (y === undefined) return this.nav.passable(toX, toZ, driving);
     const inset = driving ? 1.0 : 0.3;
-    const to = this.deckAt(toX, toZ, y, inset);
-    if (to) return !driving || to.kind !== 'path';
+    // a pavement mapped as its own deck often lies over the road deck's
+    // edge: a car may go wherever any road deck carries it, and onto a
+    // footbridge not at all
+    if (this.deckAt(toX, toZ, y, inset, driving)) return true;
+    if (driving && this.deckAt(toX, toZ, y, inset)) return false;
     if (this.deckAt(fx, fz, y)) {
       return this.nav.passable(toX, toZ, driving) && Math.abs(this.ground(toX, toZ) - y) <= STEP_UP;
     }
     return this.nav.passable(toX, toZ, driving);
   }
 
+  /**
+   * Somewhere to stand near (x, z) that leads somewhere.
+   *
+   * The nearest passable cell is not enough. An address point or a game
+   * start often lies inside a block, and the ground nearest to it is then a
+   * Hinterhof: walkable, kept by the pipeline (it keeps every region over
+   * 400 m²), and walled in on all sides. So each candidate is flood-filled
+   * first, and only one whose region reaches OPEN_REACH metres away - or runs
+   * off the loaded tiles, where we cannot tell - is taken. Enclosed regions
+   * are ruled out whole and the search moves on outward.
+   */
   freeSpot(x: number, z: number, maxR = 120, driving = false): XZ {
-    return this.nav.nearestPassable(x, z, driving, maxR) ?? [x, z];
+    const first = this.nav.nearestPassable(x, z, driving, maxR);
+    if (!first) return [x, z];
+    // a window of whole cells around (x, z), big enough for every search
+    const W = Math.ceil(maxR + OPEN_REACH + 2);
+    const side = 2 * W + 1;
+    const seen = new Uint8Array(side * side);
+    const cx = Math.floor(x) + 0.5, cz = Math.floor(z) + 0.5;
+    const at = (i: number, j: number) => (j + W) * side + (i + W);
+    let start = this.nav.passable(cx, cz, driving) ? [0, 0] as [number, number]
+      : this.nextCandidate(cx, cz, maxR, W, side, seen, driving, at);
+    for (let tries = 0; start && tries < 8; tries++) {
+      if (this.leadsOut(start, cx, cz, W, side, seen, driving)) {
+        return start[0] === 0 && start[1] === 0 ? [x, z] : [cx + start[0], cz + start[1]];
+      }
+      start = this.nextCandidate(cx, cz, maxR, W, side, seen, driving, at);
+    }
+    // nothing open within reach: the nearest ground is still better than a wall
+    return first;
+  }
+
+  /** Flood-fill from a cell; true once it gets OPEN_REACH away or off the map. */
+  private leadsOut(start: [number, number], cx: number, cz: number, W: number, side: number,
+                   seen: Uint8Array, driving: boolean): boolean {
+    const [si, sj] = start;
+    const queue = [si, sj];
+    seen[(sj + W) * side + (si + W)] = 1;
+    const reach2 = OPEN_REACH * OPEN_REACH;
+    for (let q = 0; q < queue.length; q += 2) {
+      const i = queue[q], j = queue[q + 1];
+      if ((i - si) ** 2 + (j - sj) ** 2 >= reach2) return true;
+      for (const [di, dj] of STEPS) {
+        const ni = i + di, nj = j + dj;
+        if (ni < -W || ni > W || nj < -W || nj > W) return true;
+        const k = (nj + W) * side + (ni + W);
+        if (seen[k]) continue;
+        const px = cx + ni, pz = cz + nj;
+        if (!this.nav.contains(px, pz)) return true;
+        if (!this.nav.passable(px, pz, driving)) continue;
+        seen[k] = 1;
+        queue.push(ni, nj);
+      }
+    }
+    return false;
+  }
+
+  /** The nearest passable cell not yet ruled out, spiralling outward. */
+  private nextCandidate(cx: number, cz: number, maxR: number, W: number, side: number,
+                        seen: Uint8Array, driving: boolean,
+                        at: (i: number, j: number) => number): [number, number] | null {
+    for (let r = 1; r <= maxR; r++) {
+      const steps = Math.max(8, Math.round(2 * Math.PI * r));
+      for (let a = 0; a < steps; a++) {
+        const th = (a / steps) * Math.PI * 2;
+        const i = Math.round(Math.cos(th) * r), j = Math.round(Math.sin(th) * r);
+        if (Math.abs(i) > W || Math.abs(j) > W || seen[at(i, j)]) continue;
+        if (this.nav.passable(cx + i, cz + j, driving)) return [i, j];
+      }
+    }
+    return null;
   }
 
   /** Is a camera at this point inside something? Used to pull the third-person

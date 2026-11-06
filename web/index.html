@@ -67,6 +67,16 @@
   #result h3 { font-size: 22px; margin: 0 0 6px; letter-spacing: .06em; font-weight: 600; }
   #result .big { font-size: 46px; color: var(--accent); font-weight: 600; line-height: 1.1; }
   #result p { font-size: 11.5px; color: #c9c6bf; margin: 4px 0; }
+  #result table.scores { border-collapse: collapse; margin: 8px auto 4px; font-size: 11.5px; }
+  #result .scorewrap { overflow-x: auto; max-width: 100%; }
+  #result table.scores th { color: var(--dim); font-weight: 500; font-size: 10px; letter-spacing: .06em;
+    text-transform: uppercase; padding: 3px 8px; text-align: right; }
+  #result table.scores th:first-child, #result table.scores td:first-child { text-align: left; }
+  #result table.scores td { padding: 4px 8px; border-top: 1px solid rgba(255,255,255,.08); white-space: nowrap; }
+  #result table.scores td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  #result p.sub { color: var(--dim); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; margin-top: 12px; }
+  #result .recent { font-size: 11px; color: #c9c6bf; line-height: 1.7; }
+  #result p.short { color: #ffd23f; font-weight: 600; }
   #result p.src { font-size: 9.5px; color: var(--dim); }
   #result .rb { display: flex; gap: 8px; justify-content: center; margin-top: 12px; flex-wrap: wrap; }
   .rb button { pointer-events: auto; background: var(--accent); color: #14161c; border: 0; border-radius: 6px;
@@ -77,6 +87,14 @@
     border: 1px solid rgba(255,255,255,.14); border-radius: 5px; font: inherit; font-size: 11px;
     padding: 4px 9px; cursor: pointer; letter-spacing: .08em; }
   #lang button.on { color: #14161c; background: var(--accent); border-color: var(--accent); }
+  /* your own records: an icon at the side, opposite the languages, once the menu is up */
+  #scoresBtn { position: absolute; top: 12px; left: 16px; display: none; pointer-events: auto;
+    width: 38px; height: 38px; border-radius: 50%; font-size: 18px; line-height: 1; cursor: pointer;
+    background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.14); color: var(--ui);
+    -webkit-tap-highlight-color: transparent; }
+  #boot.ready #scoresBtn { display: grid; place-items: center; }
+  #scoresBtn:hover, #scoresBtn:focus-visible { border-color: var(--accent); outline: none; }
+  #scoresBtn.on { background: var(--accent); border-color: var(--accent); }
   #menunote { font-size: 10px; color: var(--dim); margin-top: 14px; }
   #game { top: 62px; left: 50%; transform: translateX(-50%); min-width: 260px; max-width: calc(100vw - 32px);
     text-align: center; display: none; font-size: 12px; }
@@ -87,14 +105,63 @@
   #gTime.low { color: #ff6b5b; animation: pulse 1s infinite; }
   @keyframes pulse { 50% { opacity: .45; } }
   #gScore b { color: var(--accent); font-size: 15px; }
+  #gTime.plus { animation: plus .5s ease-out; }
+  @keyframes plus { 0% { color: #6ee7a0; transform: scale(1.35); } 100% { transform: scale(1); } }
+  #gPts { display: flex; justify-content: center; align-items: baseline; gap: 8px; margin-top: 2px; }
+  #gPoints { font-size: 26px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums;
+    line-height: 1.1; }
+  #gMult { font-size: 16px; font-weight: 700; color: #fff; }
+  #gMult[data-n="3"] { color: #ffd23f; }
+  #gMult[data-n="4"] { color: #ff9f43; }
+  #gMult[data-n="5"] { color: #ff5b8a; animation: pulse .6s infinite; }
+  #gCombo { height: 3px; border-radius: 2px; background: rgba(255,255,255,.08); overflow: hidden; margin: 3px 0 5px; }
+  #gCombo div { height: 100%; background: var(--accent); transform-origin: left; transform: scaleX(0); }
+  #gGoal { font-size: 10.5px; color: var(--dim); margin-top: 2px; min-height: 1em; }
+  #gGoal:empty { display: none; }
+  /* points and the like jump up from the middle of the screen */
+  #pops { position: fixed; left: 0; right: 0; top: 41%; z-index: 6; pointer-events: none;
+    display: flex; flex-direction: column; align-items: center; gap: 2px; }
+  .pop { white-space: nowrap; font-weight: 700; font-size: 18px; color: #fff; line-height: 1.15;
+    text-shadow: 0 2px 8px rgba(0,0,0,.7); animation: pop 1.3s ease-out both; }
+  .pop.big { font-size: 34px; color: var(--accent); }
+  .pop.gold { color: #ffd23f; }
+  .pop.big.gold { font-size: 40px; }
+  .pop.combo { color: #ff9f43; }
+  .pop.time { color: #6ee7a0; }
+  .pop.dim { color: var(--dim); font-size: 13px; font-weight: 500; }
+  .pop.record { font-size: 28px; color: #ffd23f; animation-duration: 2.2s; }
+  @keyframes pop {
+    0% { opacity: 0; transform: translateY(18px) scale(.6); }
+    15% { opacity: 1; transform: translateY(0) scale(1.15); }
+    30% { transform: translateY(0) scale(1); }
+    75% { opacity: 1; }
+    100% { opacity: 0; transform: translateY(-40px) scale(1); }
+  }
+  #flash { position: fixed; inset: 0; pointer-events: none; z-index: 4; opacity: 0;
+    background: radial-gradient(ellipse at center, rgba(255,255,255,0) 30%, rgba(255,255,255,.45) 100%); }
+  #flash.gold { background: radial-gradient(ellipse at center, rgba(255,210,63,.1) 20%, rgba(255,190,40,.6) 100%); }
+  #flash.on { animation: flash .45s ease-out; }
+  @keyframes flash { 0% { opacity: 1; } 100% { opacity: 0; } }
+  /* speed lines while boosting */
+  #rush { position: fixed; inset: -10%; pointer-events: none; z-index: 4; opacity: 0; display: none;
+    background: repeating-conic-gradient(from 0deg at 50% 50%, rgba(255,255,255,0) 0deg 5deg,
+      rgba(255,255,255,.22) 5.4deg, rgba(255,255,255,0) 6deg 11deg);
+    -webkit-mask: radial-gradient(ellipse at center, transparent 38%, #000 75%);
+    mask: radial-gradient(ellipse at center, transparent 38%, #000 75%);
+    animation: rush .25s linear infinite; }
+  @keyframes rush { 50% { transform: rotate(2deg) scale(1.03); } }
+  /* a full bladder: the edges of the screen go yellow and throb */
+  #urge { position: fixed; inset: 0; pointer-events: none; z-index: 4; opacity: 0; transition: opacity .5s;
+    background: radial-gradient(ellipse at center, rgba(246,201,69,0) 45%, rgba(246,201,69,.5) 100%); }
   #gMeter { position: relative; height: 16px; border-radius: 8px; background: rgba(255,255,255,.1);
     overflow: hidden; margin: 6px 0 4px; }
-  #gMeter div { position: absolute; inset: 0 auto 0 0; width: 0; transition: width .2s, background .4s; }
+  #gMeter div { position: absolute; inset: 0; transform-origin: left; transform: scaleX(0);
+    transition: transform .2s, background .4s; }
   #gMeter span { position: relative; font-size: 10px; line-height: 16px; text-shadow: 0 1px 2px #000; }
   #gCompass { display: flex; align-items: center; justify-content: center; gap: 7px; color: #c9c6bf; font-size: 11px; }
   #gArrow { display: inline-block; color: var(--accent); font-size: 16px; transition: transform .08s linear; }
   #gTarget { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #banner { position: fixed; left: 50%; top: 34%; transform: translate(-50%, -8px); z-index: 6; pointer-events: none;
+  #banner { position: fixed; left: 50%; top: 31%; transform: translate(-50%, -8px); z-index: 6; pointer-events: none;
     font-size: 17px; font-weight: 600; letter-spacing: .03em; background: rgba(14,16,21,.82); padding: 10px 20px;
     border-radius: 10px; border: 1px solid rgba(255,180,84,.45); opacity: 0; transition: opacity .25s, transform .25s;
     max-width: calc(100vw - 32px); text-align: center; }
@@ -126,12 +193,36 @@
   body.touch #map { width: 110px; height: 110px; }
   body.touch #game { left: 12px; transform: none; min-width: 0; width: calc(100vw - 160px); max-width: 360px; }
   body.touch { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  /* a backdrop blur is redone every frame over a moving 3D scene: too dear for a phone's GPU */
+  body.touch .panel, body.touch #touchButtons button, body.touch #boot.over {
+    backdrop-filter: none; -webkit-backdrop-filter: none; }
+  body.touch .panel { background: rgba(14,16,21,.84); }
+  body.touch #touchButtons button { background: rgba(14,16,21,.7); }
   body.touch #credits { font-size: 8px; max-width: none; white-space: nowrap; padding: 3px 8px;
     bottom: max(4px, env(safe-area-inset-bottom)); opacity: .75; }
+  /* a phone on its side: little height, so the game panel goes compact */
+  @media (max-height: 500px) {
+    body.touch #game { width: 270px; padding: 5px 9px; font-size: 10.5px; line-height: 1.35; }
+    body.touch #gTitle { font-size: 9.5px; }
+    body.touch #gTime { font-size: 17px; }
+    body.touch #gPoints { font-size: 19px; }
+    body.touch #gMult { font-size: 13px; }
+    body.touch #gScore b { font-size: 12px; }
+    body.touch #gGoal { font-size: 9.5px; }
+    body.touch #gMeter { height: 12px; margin: 3px 0 2px; }
+    body.touch #gMeter span { font-size: 9px; line-height: 12px; }
+    body.touch #gCombo { margin: 2px 0 3px; }
+    body.touch #map { width: 88px; height: 88px; }
+    #pops { top: 34%; }
+    .pop.big { font-size: 24px; }
+    #banner { top: 22%; font-size: 13px; }
+  }
   @media (max-width: 640px) {
     #keys, #stats, #layers { display: none; }
     #game { top: 54px; }
     #banner { font-size: 14px; }
+    .pop.big { font-size: 27px; }
+    .pop.record { font-size: 22px; }
   }
   #boot h1 { font-size: 30px; margin: 0 0 4px; letter-spacing: .16em; font-weight: 500; }
   #boot h2 { font-size: 11px; margin: 0 0 26px; color: var(--dim); font-weight: 400;
@@ -160,6 +251,16 @@
     padding: 6px; cursor: pointer; }
   #layeradd:hover, body.dragging #layeradd { color: var(--ui); border-color: var(--accent); }
   #layernote { color: var(--dim); font-size: 9.5px; margin-top: 4px; line-height: 1.4; }
+  #pause { position: fixed; inset: 0; z-index: 15; display: none; place-items: center;
+    background: rgba(10,12,17,.72); }
+  #pause.on { display: grid; }
+  #pause .inner { text-align: center; padding: 22px 26px; max-width: calc(100vw - 32px);
+    background: rgba(14,16,21,.92); border: 1px solid rgba(255,255,255,.12); border-radius: 12px; }
+  #pause h3 { margin: 0 0 6px; font-size: 24px; letter-spacing: .12em; font-weight: 600; }
+  #pause p { margin: 4px 0; font-size: 12px; color: #c9c6bf; }
+  #pause p.note { font-size: 10px; color: var(--dim); margin-top: 12px; }
+  #pause .rb { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+  #pause .rb button { padding: 12px 22px; font-size: 13px; }
   #hint { position: fixed; left: 50%; bottom: 26%; transform: translateX(-50%); z-index: 5;
     font-size: 12px; letter-spacing: .06em; background: rgba(14,16,21,.8); padding: 8px 16px;
     border-radius: 6px; border: 1px solid rgba(255,255,255,.1); opacity: 0; transition: opacity .25s; }
@@ -184,7 +285,10 @@
   </div>
   <div class="panel" id="game">
     <div class="gt"><span id="gTitle"></span><span id="gTime">5:00</span></div>
+    <div id="gPts"><b id="gPoints">0</b><span id="gMult"></span></div>
+    <div id="gCombo"><div></div></div>
     <div id="gScore"></div>
+    <div id="gGoal"></div>
     <div id="gMeter"><div></div><span></span></div>
     <div id="gCompass"><span id="gArrow">▲</span><span id="gTarget"></span></div>
   </div>
@@ -203,6 +307,7 @@
 <div id="hint"></div>
 <div id="boot"><div class="inner">
   <div id="lang"><button data-lang="de">DE</button><button data-lang="en">EN</button></div>
+  <button id="scoresBtn" data-i18n-title="scores.title" aria-label="🏆">🏆</button>
   <h1>BERLIN</h1><h2 data-i18n="boot.sub">aus offenen Geodaten gebaut</h2>
   <div id="loading">
     <div id="bar"><div></div></div>
@@ -214,7 +319,21 @@
     <div id="menunote" data-i18n-html="menu.note"></div>
   </div>
 </div></div>
+<div id="pause"><div class="inner">
+  <h3 data-i18n="pause.title">Pause</h3>
+  <p id="pauseInfo"></p>
+  <div class="rb">
+    <button id="pauseResume" data-i18n="pause.resume">Weiter</button>
+    <button id="pauseRestart" class="alt" data-i18n="pause.restart">Neu starten</button>
+    <button id="pauseExit" class="alt" data-i18n="pause.exit">Spiel beenden</button>
+  </div>
+  <p class="note" data-i18n-html="pause.note"></p>
+</div></div>
 <div id="heat"></div>
+<div id="urge"></div>
+<div id="rush"></div>
+<div id="flash"></div>
+<div id="pops"></div>
 <div id="banner"></div>
 <div id="count"></div>
 <script type="module" src="/src/main.ts"></script>

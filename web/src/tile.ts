@@ -4,26 +4,30 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { Decks } from './bridges';
 import { waterMaterial, waterMesh } from './water';
 import { breathe, upload } from './frames';
-import { closeOnUpload, freeOnUpload, shareMaterialTextures, sharedTextures } from './memory';
+import { closeOnUpload, freeOnUpload, shareMaterialTextures, sharedTextures, shrinkTextures } from './memory';
 import type { CoverJob, MapJob, Raster } from './mapworker';
+import { LOW } from './quality';
 import { NavGrid, TerrainField, parseProps, parseTrees, type Tree } from './tiles';
 import { crownMaterial, photoRoofs, terrainMaterial, trunkMaterial,
          type GroundKind, type GroundTextures, type OrthoTile } from './materials';
 
 const TERRAIN_CHUNK = 100;          // metres per terrain mesh; one orthophoto each
 const COARSE_STEP = 4;              // metres between vertices of a distant tile
-const PHOTO_NEAR = 320;             // full-resolution orthophotos within this
-const PHOTO_FAR = 480;              // ... and dropped again beyond this
+const PHOTO_NEAR = LOW ? 180 : 320; // full-resolution orthophotos within this
+const PHOTO_FAR = LOW ? 260 : 480;  // ... and dropped again beyond this
 /** The 50 cm photo and 0.5 m cover mask are loaded at a fraction of their
  *  size: decoded, a 2,400 px mask is 30 MB. Distant tiles draw a 4 m mesh,
  *  so 2 m photos and a 4 m mask are plenty. Close by, the photo stays at
  *  50 cm - bridge decks and roofs wear it, and at 1 m they looked pixelated
  *  - and the mask, which only blends materials under the photo, at 1 m.
  *  See docs/performance.md. */
-const COARSE_PHOTO = 0.25;
+const COARSE_PHOTO = LOW ? 0.125 : 0.25;
 const COARSE_COVER = 0.125;
-const FULL_PHOTO = 1;
-const FULL_COVER = 0.5;
+// a phone (quality.ts) gets them at half size: a quarter of the memory
+const FULL_PHOTO = LOW ? 0.5 : 1;
+const FULL_COVER = LOW ? 0.25 : 0.5;
+/** Facade textures on a phone, pixels on the longer side (memory.ts). */
+const FACADE_MAX = 512;
 
 /** A tile's own manifest: tile.json, or the whole world.json of a
  *  single-area build. Written by pipeline/build_world.py. */
@@ -514,7 +518,9 @@ export class Tile {
       if (this.disposed) return;
     }
     // the same facade textures come with every tile: keep one copy of each
-    this.sharedKeys.push(...shareMaterialTextures(new Set([...groups.values()].map((g) => g.mat))));
+    const facades = new Set([...groups.values()].map((g) => g.mat));
+    if (LOW) await shrinkTextures(facades, FACADE_MAX);
+    this.sharedKeys.push(...shareMaterialTextures(facades));
 
     // every building material takes its upward faces from the orthophoto
     if (this.overview) {
@@ -559,7 +565,10 @@ export class Tile {
   private async addPackedBuildings(gltf: { scene: THREE.Group }, aniso: number): Promise<void> {
     const meshes: THREE.Mesh[] = [];
     gltf.scene.traverse((o) => { if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh); });
-    this.sharedKeys.push(...shareMaterialTextures(new Set(meshes.map((m) => m.material as THREE.Material))));
+    const mats = new Set(meshes.map((m) => m.material as THREE.Material));
+    // dropped meanwhile or not, carry on: loadFull() tidies up after
+    if (LOW) await shrinkTextures(mats, FACADE_MAX);
+    this.sharedKeys.push(...shareMaterialTextures(mats));
     const done = new Set<THREE.Material>();
     for (const mesh of meshes) {
       const mat = mesh.material as THREE.MeshStandardMaterial;
@@ -634,7 +643,9 @@ export class Tile {
         g.geos.push(geo.clone().applyMatrix4(m));
       }
     }
-    this.sharedKeys.push(...shareMaterialTextures(new Set([...groups.values()].map((g) => g.mat))));
+    const facades = new Set([...groups.values()].map((g) => g.mat));
+    if (LOW) await shrinkTextures(facades, FACADE_MAX);
+    this.sharedKeys.push(...shareMaterialTextures(facades));
     for (const { mat, geos } of groups.values()) {
       const merged = mergeGeometries(geos, false);
       for (const g of geos) g.dispose();

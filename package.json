@@ -9,6 +9,7 @@
     "preview": "vite preview --host",
     "typecheck": "tsc --noEmit",
     "bench": "node scripts/bench.ts",
+    "bench:games": "node scripts/games-bench.ts",
     "check": "node scripts/check.ts"
   },
   "devDependencies": {

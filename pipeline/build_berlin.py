@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import als                                                       # noqa: E402
 import build_pois                                                # noqa: E402
 import build_world as bw                                         # noqa: E402
+import landings                                                  # noqa: E402
 import osmlocal                                                  # noqa: E402
 import street_furniture                                          # noqa: E402
 from geo import ORIGIN_E, ORIGIN_H, ORIGIN_N, utm33, utm33_inv   # noqa: E402
@@ -148,6 +149,8 @@ def build_tile(key, args):
                 rewater(key, area, out, args)
                 return key, time.time() - t0, None
             manifest, _nav = bw.build(area, out, args, margin=MARGIN)
+            # bridge ends carried on to ground the game lets you off onto
+            print("  %d deck ends carried on to their landings" % landings.land_tile(out, manifest))
             pois = build_pois.build(
                 manifest["origin"], manifest["world"],
                 os.path.join(bw.CACHE, "pois", "pois_%s.json" % key), args.refresh, margin=0)
@@ -179,6 +182,7 @@ def rewater(key, area, out, args):
             manifest[k] = patch[k]
         else:
             manifest.pop(k, None)
+    print("  %d deck ends carried on to their landings" % landings.land_tile(out, manifest))
     with open(tj + ".part", "w") as mf:
         json.dump(manifest, mf, indent=1)
     os.replace(tj + ".part", tj)

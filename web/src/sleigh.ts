@@ -105,7 +105,8 @@ export function makeSleigh(): THREE.Group {
     }
   }
 
-  const santa = makeHuman({ top: 0xc8102e, legs: 0xc8102e, hair: 0xf2f2f2 });
+  const santa = makeHuman({ top: 0xc8102e, legs: 0xc8102e, hair: 0xf2f2f2, shoes: 0x1d1f26,
+                           pack: null, hood: false });
   poseDrive(santa);
   santa.position.set(0, 0.55, -0.15);
   const head = (santa.userData.rig as { head: THREE.Group }).head;

@@ -6,6 +6,8 @@ import nipplejs from 'nipplejs';
  * buttons. They drive the game through the same key codes as the keyboard -
  * the joystick holds W/A/S/D (and Shift when pushed to the edge), a button
  * presses its key - so every mode, vehicle and game rule works unchanged.
+ * How far the stick is pushed also goes to onStick, which sets the pace on
+ * foot: a little walks, more runs, the edge sprints - and the knob lights up.
  *
  * Shown when the primary pointer is coarse, i.e. a finger. A laptop with a
  * touch screen keeps its keyboard and mouse UI.
@@ -17,12 +19,19 @@ export function isTouchDevice(): boolean {
 
 /** Joystick deflection past which a direction counts as held. */
 const DEAD = 0.3;
-/** Deflection that sprints. */
-const SPRINT = 0.92;
+/** Deflection that sprints: at the edge (force goes past 1 when the thumb does). */
+const SPRINT = 0.9;
+const KNOB = 'rgba(255,180,84,.85)';
+const KNOB_SPRINT = 'rgba(255,214,64,1)';
 /** Radians per pixel of drag; a thumb travels less than a mouse. */
 const LOOK = 2.4;
 
-export interface TouchButton { label: string; code: string | (() => string) }
+export interface TouchButton {
+  label: string;
+  code: string | (() => string);
+  /** Whether it does anything right now; hidden when not. */
+  show?: () => boolean;
+}
 
 export class TouchControls {
   private readonly held = new Set<string>();
@@ -33,7 +42,8 @@ export class TouchControls {
    * buttons are pressed as key codes, or as a function returning one (the
    * vehicle button cycles).
    */
-  constructor(private readonly look: (dx: number, dy: number) => void, buttons: TouchButton[]) {
+  constructor(private readonly look: (dx: number, dy: number) => void, buttons: TouchButton[],
+              private readonly onStick: (push: number | null) => void = () => {}) {
     document.body.classList.add('touch');
     this.joystick();
     this.lookArea();
@@ -41,6 +51,7 @@ export class TouchControls {
     for (const b of buttons) {
       const el = document.createElement('button');
       el.textContent = b.label;
+      if (b.show) this.toggles.push([el, b.show]);
       el.addEventListener('pointerdown', (e) => {
         e.preventDefault();
         const code = typeof b.code === 'function' ? b.code() : b.code;
@@ -52,6 +63,19 @@ export class TouchControls {
         el.addEventListener('pointerleave', up);
       });
       bar.append(el);
+    }
+  }
+
+  private readonly toggles: [HTMLElement, () => boolean][] = [];
+  private refreshIn = 0;
+
+  /** Show only the buttons that do something now; a few times a second. */
+  refresh(): void {
+    if (--this.refreshIn > 0) return;
+    this.refreshIn = 15;
+    for (const [el, show] of this.toggles) {
+      const display = show() ? '' : 'none';
+      if (el.style.display !== display) el.style.display = display;
     }
   }
 
@@ -67,13 +91,14 @@ export class TouchControls {
 
   private release(): void {
     for (const code of [...this.held]) this.hold(code, false);
+    this.onStick(null);
   }
 
   private joystick(): void {
     const zone = document.getElementById('touchMove')!;
     const stick = nipplejs.create({
       zone, mode: 'dynamic', size: 120, threshold: 0.1,
-      color: { front: 'rgba(255,180,84,.85)', back: 'rgba(255,255,255,.18)' },
+      color: { front: KNOB, back: 'rgba(255,255,255,.18)' },
     });
     stick.on('move', (e) => {
       const { x, y } = e.data.vector;
@@ -81,7 +106,11 @@ export class TouchControls {
       this.hold('KeyS', y < -DEAD);
       this.hold('KeyD', x > DEAD);
       this.hold('KeyA', x < -DEAD);
-      this.hold('ShiftLeft', e.data.force >= SPRINT);
+      const sprint = e.data.force >= SPRINT;
+      this.hold('ShiftLeft', sprint);
+      this.onStick(Math.min(1, e.data.force));
+      const knob = e.data.instance.ui?.front;
+      if (knob) knob.style.background = sprint ? KNOB_SPRINT : KNOB;
     });
     stick.on('end', () => this.release());
     // a lost touch (an incoming call, the app switcher) must not leave you running

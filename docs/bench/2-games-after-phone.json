@@ -1,0 +1,161 @@
+{
+ "date": "2026-10-29T00:25:49.751Z",
+ "url": "http://localhost:5173/?lang=de",
+ "profile": "phone",
+ "touchUi": true,
+ "seconds": 40,
+ "runs": [
+  {
+   "mode": "markets",
+   "fps": 70.0,
+   "p95ms": 22.6,
+   "worstMs": 378.0,
+   "framesOver50ms": 51.0,
+   "drawCalls": 302.0,
+   "trianglesM": 2.87,
+   "layoutMs": 0.07,
+   "styleMs": 0.19,
+   "downloadedMB": 245.6,
+   "peakMB": 792.0,
+   "peak": {
+    "textureMB": 177.0,
+    "geometryMB": 252.0,
+    "heapMB": 363.0
+   },
+   "liveHeapMB": 280.0,
+   "parsedFromLog": true
+  },
+  {
+   "mode": "heat",
+   "fps": 120.0,
+   "p95ms": 11.8,
+   "worstMs": 176.0,
+   "framesOver50ms": 10.0,
+   "drawCalls": 209.0,
+   "trianglesM": 2.7,
+   "layoutMs": 0.01,
+   "styleMs": 0.04,
+   "downloadedMB": 70.2,
+   "peakMB": 696.0,
+   "peak": {
+    "textureMB": 149.0,
+    "geometryMB": 182.0,
+    "heapMB": 365.0
+   },
+   "liveHeapMB": 187.0,
+   "parsedFromLog": true
+  },
+  {
+   "mode": "giessen",
+   "frames": 5277,
+   "fps": 130,
+   "p50ms": 7.3,
+   "p95ms": 10.1,
+   "worstMs": 115,
+   "framesOver50ms": 6,
+   "drawCalls": 312,
+   "trianglesM": 4.19,
+   "gameMsPerFrame": 0.53,
+   "scriptMs": 6.65,
+   "styleMs": 0.03,
+   "layoutMs": 0.01,
+   "layouts": 0,
+   "heapMB": 173,
+   "downloadedMB": 51.8,
+   "reached": 1,
+   "score": 100,
+   "hops": 3,
+   "metres": 524,
+   "peakMB": 709,
+   "peak": {
+    "textureMB": 130,
+    "geometryMB": 227,
+    "heapMB": 352,
+    "glTextures": 164,
+    "glGeometries": 744,
+    "tiles": {
+     "buildings": 3647,
+     "trees": 9616,
+     "tiles": 14,
+     "full": 4
+    }
+   },
+   "liveHeapMB": 172
+  },
+  {
+   "mode": "toilets",
+   "frames": 7096,
+   "fps": 176,
+   "p50ms": 5.1,
+   "p95ms": 8.8,
+   "worstMs": 96,
+   "framesOver50ms": 4,
+   "drawCalls": 111,
+   "trianglesM": 1.2,
+   "gameMsPerFrame": 0.71,
+   "scriptMs": 4.78,
+   "styleMs": 0.07,
+   "layoutMs": 0.01,
+   "layouts": 0,
+   "heapMB": 165,
+   "downloadedMB": 23,
+   "reached": 1,
+   "score": 100,
+   "hops": 3,
+   "metres": 411,
+   "peakMB": 702,
+   "peak": {
+    "textureMB": 137,
+    "geometryMB": 204,
+    "heapMB": 361,
+    "glTextures": 197,
+    "glGeometries": 464,
+    "tiles": {
+     "buildings": 4057,
+     "trees": 3507,
+     "tiles": 14,
+     "full": 4
+    }
+   },
+   "liveHeapMB": 164
+  },
+  {
+   "mode": "doener",
+   "frames": 5435,
+   "fps": 134,
+   "p50ms": 7.3,
+   "p95ms": 10,
+   "worstMs": 112,
+   "framesOver50ms": 5,
+   "drawCalls": 224,
+   "trianglesM": 4.02,
+   "gameMsPerFrame": 0.44,
+   "scriptMs": 6.22,
+   "styleMs": 0.13,
+   "layoutMs": 0,
+   "layouts": 0,
+   "heapMB": 309,
+   "downloadedMB": 42.1,
+   "reached": 4,
+   "score": 700,
+   "hops": 16,
+   "metres": 470,
+   "peakMB": 804,
+   "peak": {
+    "textureMB": 179,
+    "geometryMB": 229,
+    "heapMB": 396,
+    "glTextures": 221,
+    "glGeometries": 530,
+    "tiles": {
+     "buildings": 3744,
+     "trees": 10372,
+     "tiles": 15,
+     "full": 4
+    }
+   },
+   "liveHeapMB": 308
+  }
+ ],
+ "note": "markets and heat parsed from the log of a run a code reload interrupted; giessen, toilets and doener from a full second run"
+}

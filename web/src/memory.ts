@@ -71,12 +71,54 @@ class SharedTextures {
     return this.refs.has(tex);
   }
 
+  hasKey(key: string): boolean {
+    return this.byKey.has(key);
+  }
+
   get size(): number { return this.refs.size; }
 }
 
 export const sharedTextures = new SharedTextures();
 
 const SLOTS = ['map', 'normalMap', 'roughnessMap', 'aoMap', 'metalnessMap', 'emissiveMap'] as const;
+
+const keyOf = (std: THREE.MeshStandardMaterial, slot: string, w: number, h: number) =>
+  `${std.name}|${slot}|${w}x${h}`;
+
+/**
+ * Scale a glTF file's textures down to at most `max` pixels on a side, before
+ * they are shared. For a phone (quality.ts): OSM2World's facades come at
+ * 1,024 px, 5.6 MB each on the GPU, and two dozen of them are in use; at
+ * phone size and street distance half that is indistinguishable. A texture
+ * already shared at the smaller size is left alone - the shared copy will
+ * replace it - so each is scaled once, not once per tile.
+ */
+export async function shrinkTextures(mats: Iterable<THREE.Material>, max: number): Promise<void> {
+  const seen = new Set<THREE.Texture>();
+  for (const m of mats) {
+    const std = m as THREE.MeshStandardMaterial;
+    for (const slot of SLOTS) {
+      const tex = std[slot];
+      if (!tex || seen.has(tex)) continue;
+      seen.add(tex);
+      const img = tex.image as ImageBitmap | undefined;
+      if (typeof ImageBitmap === 'undefined' || !(img instanceof ImageBitmap)) continue;
+      const k = max / Math.max(img.width, img.height);
+      if (k >= 1) continue;
+      const w = Math.max(1, Math.round(img.width * k)), h = Math.max(1, Math.round(img.height * k));
+      // already shared at the smaller size: share as that, and the copy goes
+      if (std.name && sharedTextures.hasKey(keyOf(std, slot, w, h))) {
+        tex.userData.shareAs = [w, h];
+        continue;
+      }
+      try {
+        tex.image = await createImageBitmap(img, { resizeWidth: w, resizeHeight: h, resizeQuality: 'medium' });
+        img.close();
+        tex.needsUpdate = true;
+      } catch { /* keep it full size */ }
+    }
+  }
+}
 
 /**
  * Point the textures of a set of glTF materials (one file's) at the shared
@@ -95,7 +137,8 @@ export function shareMaterialTextures(mats: Iterable<THREE.Material>): string[] 
       before.add(tex);
       if (!std.name) continue;
       const img = tex.image as { width?: number; height?: number } | undefined;
-      const key = `${std.name}|${slot}|${img?.width ?? 0}x${img?.height ?? 0}`;
+      const [w, h] = (tex.userData.shareAs as [number, number] | undefined) ?? [img?.width ?? 0, img?.height ?? 0];
+      const key = keyOf(std, slot, w, h);
       std[slot] = sharedTextures.take(key, tex);
       keys.push(key);
     }
