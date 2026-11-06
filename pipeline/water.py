@@ -284,6 +284,65 @@ def write(wet, lev, bx, nx, nz, X0, Z0, x0, z0, sx, sz, out, shape=None):
                 vertices.extend([[round(x, 3), round(z, 3), round(y - ORIGIN_H, 3)] for x, z in pts])
                 indices.extend([start, start + 1, start + 2])
         data["mesh"] = {"v": vertices, "i": indices, "r": []}
+        falls(data["mesh"])
     with open(path, "w") as fh:
         json.dump(data, fh, separators=(",", ":"))
     return {"file": "water.json", "bytes": os.path.getsize(path)}
+
+
+def falls(mesh):
+    """Where water at two levels meets - a weir, a lock gate, the dam at
+    Muehlendamm - the step between them is a face of falling water, not a gap
+    to look through to the sky. Adds the faces to a water.json mesh, both
+    ways round; mesh["falls"] marks where they start, so this can run again
+    on a mesh it has been run on."""
+    from collections import defaultdict
+    from shapely import Polygon, unary_union
+    from shapely.strtree import STRtree
+    v, idx = mesh["v"], mesh["i"]
+    if "falls" in mesh:
+        idx = idx[:mesh["falls"][0]]
+        v = v[:mesh["falls"][1]]
+    by_level = defaultdict(list)
+    for t in range(0, len(idx) - 2, 3):
+        ys = sorted(v[k][2] for k in idx[t:t + 3])
+        # stitch_water may have moved an edge vertex by a few centimetres
+        tri = Polygon([v[k][:2] for k in idx[t:t + 3]])
+        if tri.area > 1e-9:
+            by_level[round(ys[1], 2)].append(tri)
+    levels = [(unary_union(ps).buffer(0), y) for y, ps in by_level.items()]
+    tree = STRtree([shape for shape, _ in levels])
+    v, idx = list(v), list(idx)
+    mark = [len(idx), len(v)]
+    for i, (shape, y) in enumerate(levels):
+        for j in tree.query(shape.buffer(0.05)):
+            other, y2 = levels[j]
+            if j <= i or abs(y - y2) < 0.02:
+                continue
+            shared = shape.boundary.intersection(other.buffer(0.02))
+            hi, lo = max(y, y2), min(y, y2)
+            for line in _lines(shared):
+                pts = list(line.coords)
+                for a, b in zip(pts, pts[1:]):
+                    if abs(a[0] - b[0]) + abs(a[1] - b[1]) < 1e-3:
+                        continue
+                    k = len(v)
+                    v += [[round(a[0], 3), round(a[1], 3), hi], [round(a[0], 3), round(a[1], 3), lo],
+                          [round(b[0], 3), round(b[1], 3), lo], [round(b[0], 3), round(b[1], 3), hi]]
+                    idx += [k, k + 1, k + 2, k, k + 2, k + 3, k, k + 2, k + 1, k, k + 3, k + 2]
+    mesh["v"], mesh["i"] = v, idx
+    if "rawY" in mesh:          # stitch_water's own heights, one per vertex
+        mesh["rawY"] = mesh["rawY"][:mark[1]] + [p[2] for p in v[mark[1]:]]
+    if len(idx) > mark[0]:
+        mesh["falls"] = mark
+    else:
+        mesh.pop("falls", None)
+    return (len(idx) - mark[0]) // 12
+
+
+def _lines(geom):
+    if geom.is_empty:
+        return []
+    if geom.geom_type in ("LineString", "LinearRing"):
+        return [geom]
+    return [line for g in getattr(geom, "geoms", ()) for line in _lines(g)]

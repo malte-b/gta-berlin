@@ -104,6 +104,16 @@ class BridgeTests(unittest.TestCase):
         self.assertTrue(all(abs(p[2] - 42) < 0.01 for p in rail["st"]))
         self.assertTrue(all(p[2] == 34 for p in road["st"]))
 
+    def test_carriageways_meeting_end_to_end_are_not_one_folded_deck(self):
+        meta = lambda i: {"osm": [i]}
+        north = ("road", 1, [(0, 0, 3), (0, -30, 3)], False, meta(1))
+        back = ("road", 1, [(0, -30, 3), (8, 0, 3)], False, meta(2))      # a hairpin
+        on = ("road", 1, [(0, -30, 3), (2, -60, 3)], False, meta(3))      # straight on
+        self.assertEqual(sorted(len(c[1]) for c in bridges._chains([north, back])), [2, 2])
+        self.assertEqual([len(c[1]) for c in bridges._chains([north, on])], [3])
+        # at a fork the way straight on joins, the one turning back does not
+        self.assertEqual(sorted(c[5]["osm"] for c in bridges._chains([north, back, on])), [[1, 3], [2]])
+
     def test_low_hall_below_a_viaduct_does_not_hide_its_deck(self):
         from geo import ORIGIN_E, ORIGIN_N, utm33_inv
         corners = [(2, 2), (8, 2), (8, 8), (2, 8)]

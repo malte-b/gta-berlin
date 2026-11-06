@@ -603,6 +603,14 @@ def relocate(glb_in, glb_out, to_utm, height, chunk_of, in_area):
 
 
 LEVEL_HEIGHT = 3.3          # metres per storey when estimating levels
+# Structures mapped as buildings that have no storeys, so get no estimated
+# building:levels and with it no windows: the 2,711 concrete stelae of the
+# Memorial to the Murdered Jews of Europe (man_made=stele), chimneys, silos.
+STRUCTURES = {"stele", "monument", "obelisk", "chimney", "silo", "storage_tank", "bunker_silo"}
+
+
+def _structure(tags):
+    return tags.get("man_made") in STRUCTURES or tags.get("building") in STRUCTURES
 
 
 def _num(tags, key):
@@ -842,7 +850,7 @@ def complete_3d_tags(osm_path, out_path, nodes, ways, rels, ground, top, grid, d
         ks = cells(rings, x0, z0, 1.0, nx, nz)
         # Wings of different heights under one outline: split by the scan.
         # Outlines whose height or roof shape someone mapped are trusted.
-        if ("building:part" not in tags and h_mapped is None
+        if ("building:part" not in tags and h_mapped is None and not _structure(tags)
                 and "roof:shape" not in tags and len(ks) >= 100):
             parts = splitter.split(ks, rings, top, ground, nx, x0, z0)
             if parts:
@@ -892,7 +900,7 @@ def complete_3d_tags(osm_path, out_path, nodes, ways, rels, ground, top, grid, d
                 add["height"] = "%.1f" % roof["top"]
                 add["source:height"] = "ALS Berlin, derived by gta-berlin"
                 counts["heights"] += 1
-        if "building:levels" not in tags:
+        if "building:levels" not in tags and not _structure(tags):
             # storeys from the wall height, which is what carries windows
             if h_mapped is not None:
                 wall = h_mapped - (_num(tags, "min_height") or 0.0) \

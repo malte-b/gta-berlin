@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { World } from './world';
+import { DRIVE_INSET, WALK_INSET, type World } from './world';
 
 const GRAVITY = 24.0;
 const JUMP = 8.2;
@@ -564,7 +564,7 @@ export class Player {
       this.mode = 'foot';
     }
     const y = w.height(this.pos.x, this.pos.z, this.pos.y);
-    if (w.deckAt(this.pos.x, this.pos.z, y, this.driving ? 1.0 : 0.3, this.driving)) {
+    if (w.deckAt(this.pos.x, this.pos.z, y, this.driving ? DRIVE_INSET : WALK_INSET, this.driving)) {
       this.pos.y = y;
       return;
     }

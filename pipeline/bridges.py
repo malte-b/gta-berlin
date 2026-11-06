@@ -138,6 +138,9 @@ def _layer(tags):
         return 1
 
 
+HAIRPIN = -0.5         # cosine of the sharpest turn one deck makes, about 120 degrees
+
+
 def _chains(ways):
     """Join ways of one kind and layer that continue each other end to end.
     ways: [(kind, layer, [(x, z, hw), ...], through)]. Returns [(kind, points,
@@ -147,6 +150,14 @@ def _chains(ways):
     the deck."""
     def key(p):
         return (round(p[0], 1), round(p[1], 1))
+
+    def straight_on(a, p, c):
+        """Whether a -> p -> c carries on rather than turning back: two
+        carriageways meeting end to end (Lutherbruecke) are two decks, not
+        one folded back over itself."""
+        ux, uz, vx, vz = p[0] - a[0], p[1] - a[1], c[0] - p[0], c[1] - p[1]
+        lu, lv = math.hypot(ux, uz), math.hypot(vx, vz)
+        return lu == 0 or lv == 0 or (ux * vx + uz * vz) / (lu * lv) > HAIRPIN
     ends, anywhere = {}, {}
     for i, (kind, layer, pts, _t, _meta) in enumerate(ways):
         for p in (pts[0], pts[-1]):
@@ -163,15 +174,19 @@ def _chains(ways):
         for at_tail in (True, False):
             while True:
                 p = chain[-1] if at_tail else chain[0]
-                nxt = [j for j in ends.get((kind, layer, key(p)), []) if not used[j]]
+                before = chain[-2] if at_tail else chain[1]
+
+                def onward(j):
+                    q = ways[j][2]
+                    return q if key(q[0]) == key(p) else q[::-1]
+                nxt = [j for j in ends.get((kind, layer, key(p)), []) if not used[j]
+                       and straight_on(before, p, onward(j)[1])]
                 if len(nxt) != 1:
                     break
                 j = nxt[0]
                 used[j] = True
                 members.add(j)
-                q = ways[j][2]
-                if key(q[0]) != key(p):
-                    q = q[::-1]
+                q = onward(j)
                 if at_tail:
                     chain += q[1:]
                 else:

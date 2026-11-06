@@ -26,6 +26,11 @@ const COARSE_IN = LOW ? 1400 : 2600;
 const COARSE_OUT = LOW ? 1700 : 3200;
 /** How far up a surface may be and still be stepped onto, metres. */
 const STEP_UP = 1.0;
+/** How far in from a deck's edge you must stay on foot and by car, metres:
+ *  on top of the player's 0.4 m probe, so a footbridge 1.1 m wide is
+ *  walkable - Ernststeg is 1.6 m - and a car keeps off the pavement edge. */
+export const WALK_INSET = 0.15;
+export const DRIVE_INSET = 1.0;
 /** A spawn's ground must reach this far, metres, to count as not walled in;
  *  more than the span of a Berlin block's courtyards. */
 const OPEN_REACH = 160;
@@ -382,7 +387,7 @@ export class World {
    */
   canStep(fx: number, fz: number, toX: number, toZ: number, driving = false, y?: number): boolean {
     if (y === undefined) return this.nav.passable(toX, toZ, driving);
-    const inset = driving ? 1.0 : 0.3;
+    const inset = driving ? DRIVE_INSET : WALK_INSET;
     // a pavement mapped as its own deck often lies over the road deck's
     // edge: a car may go wherever any road deck carries it, and onto a
     // footbridge not at all

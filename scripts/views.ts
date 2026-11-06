@@ -42,6 +42,8 @@ const VIEWS: View[] = [
   { name: 'zossener', note: 'Zossener Brücke: both carriageways and their pavements form one surface', x: 1597, z: 1900, above: 9, tx: 1597, tz: 1830, pitch: -0.4 },
   { name: 'u1-oberbaum', note: 'U1 off the Oberbaumbrücke towards Warschauer Straße: the viaduct carries on at track level, nothing on the street', x: 5100, z: 1435, above: 35, tx: 5100, tz: 1395, pitch: -0.75 },
   { name: 'u1-warschauer', note: 'U1 into Warschauer Straße station: tracks on the hall roof, no slab on the road', x: 5165, z: 1320, above: 35, tx: 5165, tz: 1280, pitch: -0.75 },
+  { name: 'memorial', note: 'Memorial to the Murdered Jews of Europe: plain concrete stelae, no windows', x: 480, z: 74, above: 7, tx: 480, tz: 60, pitch: -0.55 },
+  { name: 'ddr-wall', note: 'Retaining wall behind the Spree promenade by the DDR-Museum: one straight face, no staircase', x: 2096, z: -474, above: 9, tx: 2096, tz: -488, pitch: -0.55 },
   { name: 'wildenbruch', note: 'Wildenbruchbrücke and canal: clean bridge boundaries and vector-aligned banks', x: 4858, z: 3402, above: 9, tx: 4858, tz: 3360, pitch: -0.5 },
   { name: 'spawn', note: 'Kreuzberg spawn at street level: no water on the square', x: 918, z: 3320, above: 2, tx: 1000, tz: 3200, pitch: -0.05 },
   { name: 'park', note: 'Görlitzer Park: lawn, paths, no water', x: 4428, z: 2140, above: 3, tx: 4428, tz: 2060, pitch: -0.1 },

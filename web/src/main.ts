@@ -517,7 +517,7 @@ for (const o of [avatar, bike, scooter]) {
 const boat = makeBoat();
 boat.visible = false;
 boat.rotation.order = 'YXZ';
-boat.traverse((c) => { if ((c as THREE.Mesh).isMesh) c.castShadow = true; });
+boat.traverse((c) => { if ((c as THREE.Mesh).isMesh && c.name !== 'boat-mask') c.castShadow = true; });
 scene.add(boat);
 
 const car = makeCar();

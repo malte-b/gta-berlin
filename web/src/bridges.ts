@@ -131,6 +131,10 @@ export class Decks {
           }
         }
       }
+    });
+    // edges once every deck is in the buckets: a seam with another needs both
+    this.decks.forEach((d, di) => {
+      const surface = this.surfaces[di];
       for (const ring of surface.rings) {
         for (let i = 0; i < ring.length; i++) {
           const a = surface.vertices[ring[i]], b = surface.vertices[ring[(i + 1) % ring.length]];
@@ -143,6 +147,7 @@ export class Decks {
           } else if (d.axis && edgeLength > 0 && Math.abs((b[0] - a[0]) * d.axis[0] + (b[2] - a[2]) * d.axis[1]) / edgeLength < 0.55) {
             continue; // a landing, not a guardrail: do not inset it into a gap
           }
+          if (this.seam(di, a, b)) continue;
           for (let x = Math.floor((Math.min(a[0], b[0]) - 1) / CELL); x <= Math.floor((Math.max(a[0], b[0]) + 1) / CELL); x++) {
             for (let z = Math.floor((Math.min(a[2], b[2]) - 1) / CELL); z <= Math.floor((Math.max(a[2], b[2]) + 1) / CELL); z++) {
               const key = `${x},${z}`;
@@ -175,6 +180,38 @@ export class Decks {
       || (Math.abs(a[0] - clip[2]) < 0.002 && Math.abs(b[0] - clip[2]) < 0.002)
       || (Math.abs(a[2] - clip[1]) < 0.002 && Math.abs(b[2] - clip[1]) < 0.002)
       || (Math.abs(a[2] - clip[3]) < 0.002 && Math.abs(b[2] - clip[3]) < 0.002));
+  }
+
+  /**
+   * Does another deck of the same kind carry on past this edge, at its
+   * level? Then it is a seam between two pieces of one road - Lutherbrücke's
+   * approach is four - not a drop, and no reason to keep off it: inset from
+   * every piece's own edges, a car found no lane through their overlap.
+   */
+  private seam(di: number, a: Vertex, b: Vertex): boolean {
+    const dx = b[0] - a[0], dz = b[2] - a[2];
+    const l = Math.hypot(dx, dz);
+    if (l < 1e-6) return false;
+    const nx = -dz / l * 0.3, nz = dx / l * 0.3;
+    const kind = this.decks[di].k;
+    // at (x, z) within `near` of height y: this deck (self), or another of its kind
+    const on = (x: number, z: number, self: boolean, y: number, near = 0.3) => {
+      for (const [dj, i] of this.buckets.get(`${Math.floor(x / CELL)},${Math.floor(z / CELL)}`) ?? []) {
+        if ((dj === di) !== self || this.decks[dj].k !== kind) continue;
+        const s = this.surfaces[dj];
+        const h = triangleHeight(x, z, s.vertices[s.indices[i]], s.vertices[s.indices[i + 1]], s.vertices[s.indices[i + 2]]);
+        if (h !== null && Math.abs(h - y) < near) return true;
+      }
+      return false;
+    };
+    return [0.2, 0.5, 0.8].every((t) => {
+      const x = a[0] + dx * t, z = a[2] + dz * t, y = a[1] + (b[1] - a[1]) * t;
+      // a deck folded over itself, both carriageways in one piece: an edge
+      // across its turn can lie a step off the surface on either side
+      if (on(x + nx, z + nz, true, y, 1.0) && on(x - nx, z - nz, true, y, 1.0)) return true;
+      const plus = on(x + nx, z + nz, true, y);
+      return plus ? on(x - nx, z - nz, false, y) : on(x + nx, z + nz, false, y);
+    });
   }
 
   get count(): number { return this.decks.length; }

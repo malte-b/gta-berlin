@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
+import { WATER_ORDER } from './water';
 
 /**
  * Procedural articulated characters and rideables.
@@ -816,9 +817,16 @@ export function makeBoat(): THREE.Group {
   cockpit.closePath();
   top.holes.push(cockpit);
   const sides = hull(top, 0.06, 0.52, white, 'boat-sides');
+  // A lid over the cockpit that only writes depth, drawn after the boat and
+  // before the water (WATER_ORDER): the river shows nowhere inside the hull,
+  // however the boat pitches and rolls on it.
+  const mask = new THREE.Mesh(geo('boat-mask', () => new THREE.ShapeGeometry(new THREE.Shape(cockpit.getPoints()))
+    .rotateX(Math.PI / 2).translate(0, 0.55, 0)), new THREE.MeshBasicMaterial({ colorWrite: false, side: THREE.DoubleSide }));
+  mask.name = 'boat-mask';
+  mask.renderOrder = WATER_ORDER - 1;
   const floor = block(1.6, 0.04, 3.25, 0.02, teak);
   floor.position.set(0, BOAT.sole, -0.5);
-  g.add(bottom, sides, floor);
+  g.add(bottom, sides, floor, mask);
 
   // the driver's bench, a console with the wheel ahead of it, the windscreen
   const bench = block(1.5, BOAT.seatY - BOAT.sole, 0.5, 0.05, teak);

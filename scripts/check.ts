@@ -435,7 +435,7 @@ class Window {
   readonly nav: Uint8Array;
   readonly hits: Uint8Array;
   readonly dy: Float32Array;
-  /** bit 0 a path deck, bit 1 still on it 0.3 m in from the edge, bit 2 1.0 m in */
+  /** bit 0 a path deck, bit 1 still on it 0.15 m in from the edge (World.WALK_INSET), bit 2 1.0 m in */
   readonly dflag: Uint8Array;
 
   constructor(x0: number, z0: number, x1: number, z1: number) {
@@ -458,7 +458,7 @@ class Window {
         this.nav[c] = (t?.nav?.passable(x, z, false) ? 1 : 0) | (t?.nav?.passable(x, z, true) ? 2 : 0);
         const decks = t?.decks;
         if (!decks) continue;
-        const all = decks.at(x, z), in3 = decks.at(x, z, 0.3), in10 = decks.at(x, z, 1.0);
+        const all = decks.at(x, z), in3 = decks.at(x, z, 0.15), in10 = decks.at(x, z, 1.0);
         const has = (list: typeof all, h: (typeof all)[number]) => list.some((o) => o.y === h.y && o.kind === h.kind);
         let k = 0;
         for (const h of all) {
@@ -604,7 +604,7 @@ let bridgesFlooded = 0, bridgesSkipped = 0, drawn = 0;
  * Holes in a bridge: a spot neither deck nor ground you may use, with deck on
  * both sides of it - where two pieces meet with a gap, say. A bridge can be
  * crossable round it and still stop you dead in your lane: an invisible
- * wall. For walkers (a deck 0.3 m in from its edge) and, on road decks, for
+ * wall. For walkers (a deck 0.15 m in from its edge) and, on road decks, for
  * cars (a road deck 1 m in).
  */
 function holes(w: Window, roads: boolean): void {
@@ -639,7 +639,7 @@ function holes(w: Window, roads: boolean): void {
         // from a guardrail. It is not a missing piece inside the bridge.
         if (piecesNear(x, z).some((i) => {
           const p = pieces[i];
-          return p.mesh && Number.isFinite(pieceAt(p, x, z)) && !Number.isFinite(pieceAt(p, x, z, driving ? 1 : 0.3));
+          return p.mesh && Number.isFinite(pieceAt(p, x, z)) && !Number.isFinite(pieceAt(p, x, z, driving ? 1 : 0.15));
         })) continue;
         report('deck-hole', keyOf(x, z), x, z, `a hole in the deck ${driving ? 'for cars' : 'for walkers'}`, 1);
       }

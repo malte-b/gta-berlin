@@ -49,6 +49,7 @@ import water as water_mod                                        # noqa: E402
 import alkis                                                     # noqa: E402
 import shorelines                                                # noqa: E402
 import hydrography                                               # noqa: E402
+import retaining                                                 # noqa: E402
 from geo import ORIGIN_E, ORIGIN_H, ORIGIN_N, utm33_inv          # noqa: E402
 from raster import Grid                                          # noqa: E402
 
@@ -312,10 +313,24 @@ def build(area, out, args, margin=0, log=log):
     sunk = water_mod.settle(h, wet, wlev, wbx, nx, nz, under_deck)
     bridges.blend_landings(decks, h, wet, grid)
     road_surfaces = bridges.SurfaceIndex([d for d in decks if d["kind"] != "rail"])
+    if os.path.exists(os.path.join(out, "shorelines.json")):
+        os.remove(os.path.join(out, "shorelines.json"))     # the walls below add to it
     shore_meta = shorelines.build(gdata, h, grid, wlev, wbx, (x0, z0, x0 + sx, z0 + sz), out, road_surfaces.height)
-    settle(h, nx, nz)  # bank smoothing must not push ground back through a deck
     if shore_meta:
         log("  shorelines: %d terrain cells replaced by %d clipped land/quay triangles" % (shore_meta["cells"], shore_meta["triangles"]))
+    # retaining walls the scan shows, cut straight; not at the water, which
+    # the shorelines have, nor at decks, whose ramps are meant
+    # nor along buildings, where the ground under them is only filled in
+    built = Grid(X0, Z0, 1.0, nx, nz)
+    for rings in osm3d.footprints(nodes, ways, rels, phantoms):
+        built.polygon(rings, 1)
+    built = water_mod._dilate(built.data, nx, nz, 1)
+    walls = retaining.build(h, grid, (x0, z0, x0 + sx, z0 + sz), out,
+                            [a or b or c for a, b, c in zip(wet, water_mod._dilate(under_deck, nx, nz, 2), built)])
+    if walls:
+        shore_meta = walls
+        log("  retaining walls: %(segments)d pieces, %(cells)d terrain cells cut, %(moved)d heights set" % walls["retaining"])
+    settle(h, nx, nz)  # bank smoothing must not push ground back through a deck
     del graw
     measured_w = [v for v in wlev if v is not None]
     log("  %d blocks of water, levels %s; %d terrain cells pushed under the surface"

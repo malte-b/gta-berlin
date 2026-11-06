@@ -20,12 +20,12 @@ from geo import ORIGIN_E, ORIGIN_N
 from raster import cells
 from shorelines import water_polygons
 
-VERSION = 2
+VERSION = 3
 STEP = 4
 BIN = 0.05
-# samples (one per STEP x STEP metres) a reach needs to be measured as a
-# whole: on a small basin the dominant band can be its paved edges, not the
-# water (Potsdamer Platz). Smaller ones keep water.py's per-block levels.
+# samples (one per STEP x STEP metres) a reach needs for its dominant band:
+# on a small basin that can be its paved edges, not the water (Potsdamer
+# Platz). Smaller ones take their low fifth, as water.py does per block.
 MIN_SAMPLES = 400
 _loaded = {}
 
@@ -46,9 +46,18 @@ def extend(line, distance=5):
 
 
 def measured_level(histogram):
-    """The dominant narrow return band, not the lowest bank/bed sample."""
-    if sum(histogram.values()) < MIN_SAMPLES:
+    """The dominant narrow return band, not the lowest bank/bed sample. A small
+    body has too few returns for a band: its low fifth then, as water.py
+    measures a block - still one level for the whole of it."""
+    total = sum(histogram.values())
+    if total < 12:
         return None
+    if total < MIN_SAMPLES:
+        seen = 0
+        for b in sorted(histogram):
+            seen += histogram[b]
+            if seen >= total / 5:
+                return round(b * BIN, 2)
     peak = max(histogram, key=lambda b: sum(histogram.get(b + d, 0) for d in (-1, 0, 1)))
     band = sorted((b, n) for b, n in histogram.items() if abs(b - peak) <= 2)
     total = sum(n for _, n in band)

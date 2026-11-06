@@ -46,6 +46,28 @@ class ShorelineTests(unittest.TestCase):
                 self.assertGreater(heights[r * size + c], 33.0, 'no pit along the top of the quay wall')
 
 
+class RetainingWallTests(unittest.TestCase):
+    def test_a_diagonal_wall_is_one_straight_line_not_a_staircase(self):
+        import retaining
+        from shapely import LineString
+        size = 40
+        # 2 m up where x + z > 40: the raster draws the wall as stairs
+        heights = [36.0 if c + r > size else 34.0 for r in range(size) for c in range(size)]
+        _up, segs = retaining.find(heights, (0, 0, size, size))
+        self.assertTrue(segs)
+        diagonal = LineString([(0, size + 1), (size + 1, 0)])
+        for a, b, hia, loa, hib, lob in segs:
+            self.assertLess(diagonal.distance(LineString([a, b])), retaining.SIMPLIFY + 0.3, 'the wall follows the diagonal')
+            self.assertAlmostEqual(hia, 36.0)
+            self.assertAlmostEqual(loa, 34.0)
+        with tempfile.TemporaryDirectory() as out:
+            meta = retaining.build(heights, (0, 0, size, size), (0, 0, size, size), out)
+            with open(out + '/shorelines.json') as fh:
+                data = json.load(fh)
+        self.assertGreater(meta['retaining']['faces'], 0)
+        self.assertTrue(data['walls']['i'] and data['top']['i'])
+
+
 class WaterLevelTests(unittest.TestCase):
     def test_a_reach_is_one_level_across_blocks(self):
         import hydrography

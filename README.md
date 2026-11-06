@@ -380,6 +380,9 @@ types come from OpenStreetMap. Heights come from Berlin's airborne laser scan.
   approaches and performs constrained triangulation. Concave outlines and
   genuine polygon holes survive. An elevated railway keeps its own footprint
   and height even when its local OSM `layer` number matches the road below.
+  Ways are joined into one deck only where they carry straight on: two
+  carriageways meeting end to end (Lutherbrücke) stay two decks rather than
+  one folded back over itself.
 * **Measured approaches.** The fit uses returns near the deck level and
   ground at its ends, rejecting roofs, trusses and overhead tracks. Each
   segment's grade is constrained; transverse footpaths do not set the span's
@@ -395,7 +398,9 @@ types come from OpenStreetMap. Heights come from Berlin's airborne laser scan.
   those triangles, including bends. Tops face upward, undersides downward;
   slab sides are emitted only around the perimeter. Older centreline-strip
   files remain readable. A tile cut is neither a side wall nor a movement
-  barrier. The third-person camera sweeps its whole boom against decks,
+  barrier, and nor is a seam where another deck of the same kind carries on
+  at the same level. On foot you keep 0.15 m off a deck's edge, by car 1 m,
+  so footbridges from 1.1 m wide are walkable (Ernststeg is 1.6 m). The third-person camera sweeps its whole boom against decks,
   piers and canopies, then eases back out after clearing an obstruction.
 * **Ground and objects agree.** Deck returns are removed before terrain hole
   filling. River beds remain below the water, with proper ground contact at
@@ -420,6 +425,17 @@ types come from OpenStreetMap. Heights come from Berlin's airborne laser scan.
   so a river is one flat surface across 48 m blocks and tile edges; only
   water outside a measured reach, such as a lock chamber, keeps the per-block
   level. Behind a quay wall the ground never dips below the wall's top.
+  A body with fewer than 400 samples takes the low fifth of its returns
+  instead, since on a small basin the dominant band can be its paved edges.
+  Where two levels meet - a weir, a lock gate, the Mühlendamm - a face of
+  falling water closes the step, so there is no gap to see the sky through.
+* **Retaining walls.** OSM maps few, so `retaining.py` finds them in the
+  scan: neighbouring cells 1.2 m or more apart, away from water, decks and
+  buildings. The upper side is outlined and simplified, so a wall at an
+  angle to the 1 m grid becomes the straight line it is rather than a
+  staircase. The 4 m terrain cells it runs through are cut along it, each
+  side at its own level with a stone face between, and added to
+  `shorelines.json`; the ground beside it takes its side's level.
 * **Water joins at tile edges.** `stitch_water.py` welds small survey-level
   disagreements at shared edge vertices. Interior measurements are retained,
   larger steps remain intact, and original heights make the pass repeatable
@@ -456,6 +472,9 @@ counted in the tile's props metadata. Original source records remain in the cach
 Buildings OSM puts underground (`location=underground`, or a negative
 `layer` without `location=surface`) are left out: shops in U-Bahn stations
 and underground car parks would otherwise stand on the street above.
+Structures mapped as buildings that have no storeys - the stelae of the
+Memorial to the Murdered Jews of Europe (`man_made=stele`), chimneys, silos -
+get no estimated `building:levels`, so OSM2World draws them without windows.
 
 ### Where you can go
 

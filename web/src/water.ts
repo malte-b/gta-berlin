@@ -52,6 +52,10 @@ export class WaterField {
   }
 }
 
+/** Water is drawn after everything else opaque, so a boat's cockpit can
+ *  hold it out with a depth-only lid (character.ts makeBoat). */
+export const WATER_ORDER = 2;
+
 /** Dark, glossy, with two layers of drifting ripples; uniforms.uTime animates. */
 export function waterMaterial(): THREE.MeshStandardMaterial {
   const m = new THREE.MeshStandardMaterial({ color: 0x17383c, roughness: 0.2, metalness: 0.0 });
@@ -110,5 +114,6 @@ export function waterMesh(data: WaterData, ox: number, oz: number, mat: THREE.Ma
   const mesh = new THREE.Mesh(geo, mat);
   mesh.receiveShadow = true;
   mesh.name = 'water';
+  mesh.renderOrder = WATER_ORDER;
   return mesh;
 }
