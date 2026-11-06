@@ -455,9 +455,11 @@ def terrain(e0, n0, e1, n1, cache_dir, clear=None, settle=None):
 
     Returns (heights, nx, nz, known_fraction, cells raised by close_pits)."""
     h, nx, nz = _window(e0, n0, e1, n1, cache_dir, "ground")
-    h, raised = close_pits(h, nx, nz)
     if clear:
         clear(h, nx, nz)
+    # Exclude decks before closing depressions: otherwise their returns lift
+    # nearby river banks and roads into a saw-toothed embankment.
+    h, raised = close_pits(h, nx, nz)
     known = [v == v for v in h]
     frac = sum(known) / len(known)
     h = fill_holes(h, nx, nz)

@@ -25,11 +25,24 @@ interface View {
   x: number; z: number;
   /** Metres above the highest surface (deck, roof... no: ground or deck) there. */
   above: number;
+  /** Fixed world height for views below a stacked bridge. */
+  height?: number;
+  /** Stand on the lower surface using the normal third-person camera. */
+  walking?: boolean;
   tx: number; tz: number;
   pitch: number;
 }
 
 const VIEWS: View[] = [
+  { name: 'mehring', note: 'Mehringbrücke: continuous road surface and correctly placed railings', x: 1138, z: 1900, above: 9, tx: 1138, tz: 1850, pitch: -0.45 },
+  { name: 'mehring-under', note: 'Mehringbrücke below the U-Bahn, at eye height: lower road remains level, without aerial tracks', x: 1138, z: 1870, above: 0, height: 4.7, tx: 1138, tz: 1810, pitch: -0.08 },
+  { name: 'mehring-walk', note: 'Actual third-person camera below the U-Bahn: no clipping through the elevated deck', x: 1138, z: 1851, above: 0, tx: 1138, tz: 1800, pitch: -0.58, walking: true },
+  { name: 'hallesches-tor', note: 'Hallesche-Tor-Brücke: paved plaza, no crater or detached slabs', x: 1350, z: 1920, above: 10, tx: 1338, tz: 1875, pitch: -0.4 },
+  { name: 'hallesches-tor-walk', note: 'Hallesche-Tor-Brücke on foot: level paving and furniture on the surface', x: 1338, z: 1890, above: 0, tx: 1338, tz: 1840, pitch: -0.2, walking: true },
+  { name: 'zossener', note: 'Zossener Brücke: both carriageways and their pavements form one surface', x: 1597, z: 1900, above: 9, tx: 1597, tz: 1830, pitch: -0.4 },
+  { name: 'u1-oberbaum', note: 'U1 off the Oberbaumbrücke towards Warschauer Straße: the viaduct carries on at track level, nothing on the street', x: 5100, z: 1435, above: 35, tx: 5100, tz: 1395, pitch: -0.75 },
+  { name: 'u1-warschauer', note: 'U1 into Warschauer Straße station: tracks on the hall roof, no slab on the road', x: 5165, z: 1320, above: 35, tx: 5165, tz: 1280, pitch: -0.75 },
+  { name: 'wildenbruch', note: 'Wildenbruchbrücke and canal: clean bridge boundaries and vector-aligned banks', x: 4858, z: 3402, above: 9, tx: 4858, tz: 3360, pitch: -0.5 },
   { name: 'spawn', note: 'Kreuzberg spawn at street level: no water on the square', x: 918, z: 3320, above: 2, tx: 1000, tz: 3200, pitch: -0.05 },
   { name: 'park', note: 'Görlitzer Park: lawn, paths, no water', x: 4428, z: 2140, above: 3, tx: 4428, tz: 2060, pitch: -0.1 },
   { name: 'schilling-deck', note: 'Schillingbrücke: one deck, no water on it', x: 3870, z: 712, above: 12, tx: 3920, tz: 620, pitch: -0.45 },
@@ -56,6 +69,7 @@ const url = opt('--url', 'http://localhost:5173/');
 const out = opt('--out', join(tmpdir(), 'gta-berlin-views'));
 const only = opt('--only', '');
 const close = args.includes('--close');
+const hide = opt('--hide', '').split(',').filter(Boolean);
 // --at x,z: a look down at that spot from 40 m south, e.g. from scripts/check.ts
 const at: View[] = args.flatMap((a, i) => (args[i - 1] === '--at' ? [a] : [])).map((a) => {
   const [x, z] = a.split(',').map(Number);
@@ -111,10 +125,24 @@ for (const v of views) {
     if (await ev(`(() => { const t = window.__berlin.world.tileAt(${v.x}, ${v.z}); return !!t && t.level === 'full'; })()`)) break;
   }
   await sleep(1500);
+  const tileInfo = await ev(`(() => { const t = window.__berlin.world.tileAt(${v.x}, ${v.z}); return t ? { key: t.key, base: t.base, version: t.version, shoreline: !!t.shorelines, decks: t.decks?.count } : null; })()`);
+  console.log(`${v.name}: ${JSON.stringify(tileInfo)}`);
   await ev(`(() => { const b = window.__berlin, p = b.player, w = b.world;
-    const y = w.height(${v.x}, ${v.z}, 1000) + ${v.above};
-    p.flying = true; p.pos.set(${v.x}, y, ${v.z});
-    p.yaw = Math.atan2(-(${v.tx} - ${v.x}), -(${v.tz} - ${v.z})); p.pitch = ${v.pitch}; return 1; })()`);
+    const y = ${v.walking ? `w.height(${v.x}, ${v.z}, 5)` : v.height === undefined ? `w.height(${v.x}, ${v.z}, 1000) + ${v.above}` : v.height};
+    ${v.walking ? 'delete p.land; p.onGround = true;' : 'p.land = () => {};'}
+    p.flying = ${!v.walking}; p.pos.set(${v.x}, y, ${v.z}); p.vel.set(0, 0, 0);
+    p.yaw = p.heading = Math.atan2(-(${v.tx} - ${v.x}), -(${v.tz} - ${v.z})); p.pitch = ${v.pitch}; return 1; })()`);
+  if (hide.length) await ev(`window.__berlin.scene.traverse((o) => { if (${JSON.stringify(hide)}.includes(o.name)) o.visible = false; })`);
+  if (args.includes('--debug-colors')) await ev(`(() => {
+    const colors = { terrain: 0xaa5500, 'bank tops': 0xffff00, quays: 0x00ff00, bridges: 0xff0000, water: 0x0000ff, buildings: 0x888888, props: 0xff00ff };
+    const materials = new Map();
+    window.__berlin.scene.traverse((o) => {
+      if (!o.isMesh || colors[o.name] === undefined) return;
+      if (!materials.has(o.name)) { const old = Array.isArray(o.material) ? o.material[0] : o.material;
+        materials.set(o.name, new old.constructor({ color: colors[o.name], emissive: colors[o.name], emissiveIntensity: 0.8, roughness: 1 })); }
+      o.material = materials.get(o.name);
+    }); return 1;
+  })()`);
   await sleep(2500);
   const shot = await send('Page.captureScreenshot', { format: 'png' });
   const file = `${v.name}.png`;

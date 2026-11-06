@@ -53,9 +53,10 @@ const only = opt('--tiles', '');
 const debugAt = opt('--debug', '') ? opt('--debug', '').split(',').map(Number) : null;
 
 // the game's modules, through vite: they import without file extensions
-const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'error' });
+const vite = await createServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'error' });
 const { TerrainField, NavGrid, parseProps } = await vite.ssrLoadModule('/src/tiles.ts') as typeof import('../web/src/tiles.ts');
 const { Decks } = await vite.ssrLoadModule('/src/bridges.ts') as typeof import('../web/src/bridges.ts');
+const { Shorelines } = await vite.ssrLoadModule('/src/shorelines.ts') as typeof import('../web/src/shorelines.ts');
 const { makeFromWorld } = await vite.ssrLoadModule('/src/geo.ts') as typeof import('../web/src/geo.ts');
 type Decks = InstanceType<typeof Decks>;
 
@@ -74,8 +75,9 @@ const LOCK = 1.0;
 /** Furniture more than this off the surface under it. */
 const FLOAT = 0.4;
 
-interface DeckData { k: 'road' | 'path' | 'rail'; t: number; p: number[][] }
-interface WaterData { cell: number; minX: number; minZ: number; rows: [number, [number, number, number][]][] }
+interface DeckData { k: 'road' | 'path' | 'rail'; t: number; p: number[][];
+  mesh?: { v: [number, number, number][]; i: number[]; r: number[][]; clip?: [number, number, number, number] } }
+interface WaterData { cell: number; minX: number; minZ: number; rows: [number, [number, number, number][]][]; mesh?: { v: [number, number, number][]; i: number[]; r: number[][] } }
 
 class Water {
   readonly minX: number;
@@ -83,7 +85,9 @@ class Water {
   readonly cell: number;
   readonly n: number;
   readonly level: Float32Array;
+  private readonly mesh?: Decks;
   constructor(d: WaterData, size: number) {
+    if (d.mesh) this.mesh = new Decks({ decks: [{ k: 'road', t: 0, mesh: d.mesh, p: [[0, 0, 0, 1, 1], [1, 0, 0, 1, 1]] }] });
     this.minX = d.minX;
     this.minZ = d.minZ;
     this.cell = d.cell;
@@ -94,6 +98,7 @@ class Water {
     }
   }
   at(x: number, z: number): number {
+    if (this.mesh) return this.mesh.at(x, z)[0]?.y ?? NaN;
     const c = Math.floor((x - this.minX) / this.cell), r = Math.floor((z - this.minZ) / this.cell);
     return c < 0 || r < 0 || c >= this.n || r >= this.n ? NaN : this.level[r * this.n + c];
   }
@@ -105,6 +110,7 @@ interface Tile {
   terrain?: InstanceType<typeof TerrainField>;
   nav?: InstanceType<typeof NavGrid>;
   decks?: Decks;
+  shorelines?: InstanceType<typeof Shorelines>;
   deckData: DeckData[];
   water?: Water;
 }
@@ -130,6 +136,7 @@ function tile(key: string): Tile | null {
     t = { key, dir: d, deckData: [] };
     if (m.terrain) t.terrain = new TerrainField(buf(join(d, m.terrain.file)));
     if (m.nav) t.nav = new NavGrid(buf(join(d, m.nav.file)));
+    if (m.shorelines) t.shorelines = new Shorelines(JSON.parse(readFileSync(join(d, m.shorelines.file), 'utf8')));
     if (m.bridges && existsSync(join(d, m.bridges.file))) {
       const b = JSON.parse(readFileSync(join(d, m.bridges.file), 'utf8'));
       t.deckData = b.decks;
@@ -148,7 +155,7 @@ function tile(key: string): Tile | null {
 const keyOf = (x: number, z: number) =>
   `${Math.floor((x + origin.e) / SIZE)}_${Math.floor((origin.n - z) / SIZE)}`;
 const tileAt = (x: number, z: number) => tile(keyOf(x, z));
-const ground = (x: number, z: number) => tileAt(x, z)?.terrain?.height(x, z) ?? NaN;
+const ground = (x: number, z: number) => { const t = tileAt(x, z); return t?.shorelines?.height(x, z) ?? t?.terrain?.height(x, z) ?? NaN; };
 
 /** World.height: the highest surface no more than a step above y. */
 function height(x: number, z: number, y: number): number {
@@ -263,13 +270,23 @@ function waterSeams(t: Tile, east: Tile | null, south: Tile | null): void {
   };
   for (let r = 0; r < n; r++) {
     for (let c = 0; c < n; c++) {
-      const a = L[r * n + c];
-      if (Number.isNaN(a)) continue;
+      const raw = L[r * n + c];
+      if (Number.isNaN(raw)) continue;
       const x = w.minX + (c + 1) * w.cell, z = w.minZ + (r + 1) * w.cell;
-      const right = c + 1 < n ? L[r * n + c + 1] : east?.water?.level[r * n] ?? NaN;
-      const down = r + 1 < n ? L[(r + 1) * n + c] : south?.water?.level[c] ?? NaN;
-      if (!Number.isNaN(right)) pair(a, right, x, z - w.cell / 2);
-      if (!Number.isNaN(down)) pair(a, down, x - w.cell / 2, z);
+      const rightRaw = c + 1 < n ? L[r * n + c + 1] : east?.water?.level[r * n] ?? NaN;
+      const downRaw = r + 1 < n ? L[(r + 1) * n + c] : south?.water?.level[c] ?? NaN;
+      // Candidate edges come from the source grid, but compare the actual
+      // rendered surface on either side of that edge, not its gentle grade.
+      if (Math.abs(raw - rightRaw) > SEAM && Math.abs(raw - rightRaw) < LOCK) {
+        const a = w.at(x - 0.001, z - w.cell / 2);
+        const b = (c + 1 < n ? w : east?.water)?.at(x + 0.001, z - w.cell / 2) ?? NaN;
+        if (Number.isFinite(a) && Number.isFinite(b)) pair(a, b, x, z - w.cell / 2);
+      }
+      if (Math.abs(raw - downRaw) > SEAM && Math.abs(raw - downRaw) < LOCK) {
+        const a = w.at(x - w.cell / 2, z - 0.001);
+        const b = (r + 1 < n ? w : south?.water)?.at(x - w.cell / 2, z + 0.001) ?? NaN;
+        if (Number.isFinite(a) && Number.isFinite(b)) pair(a, b, x - w.cell / 2, z);
+      }
     }
   }
   if (metres) {
@@ -317,24 +334,14 @@ const LAND_DY = 1.2;
 const MAX_AREA = 2e6;
 const MAX_HITS = 6;
 
-interface Piece { k: DeckData['k']; p: number[][]; id: number }
+interface Piece { k: DeckData['k']; p: number[][]; id: number; mesh?: DeckData['mesh']; field: Decks }
 const pieces: Piece[] = [];
 const pieceBuckets = new Map<string, number[]>();
 const PB = 32;
 
 /** The height of piece q at (x, z) with `inset` metres off its edges, or NaN - as Decks.at. */
 function pieceAt(q: Piece, x: number, z: number, inset = 0): number {
-  for (let i = 0; i + 1 < q.p.length; i++) {
-    const [ax, az, ay, al, ar = al] = q.p[i];
-    const [bx, bz, by, bl, br = bl] = q.p[i + 1];
-    const ex = bx - ax, ez = bz - az, len2 = ex * ex + ez * ez;
-    if (len2 < 1e-9) continue;
-    const t = ((x - ax) * ex + (z - az) * ez) / len2;
-    if (t < 0 || t > 1) continue;
-    const side = ((x - ax - ex * t) * -ez + (z - az - ez * t) * ex) / Math.sqrt(len2);
-    if (side <= al + (bl - al) * t - inset && -side <= ar + (br - ar) * t - inset) return ay + (by - ay) * t;
-  }
-  return NaN;
+  return q.field.at(x, z, inset)[0]?.y ?? NaN;
 }
 
 function piecesNear(x: number, z: number): number[] {
@@ -350,13 +357,17 @@ function collectPieces(tileKeys: string[]): void {
     if (!m.bridges || !existsSync(join(d, m.bridges.file))) continue;
     for (const dd of JSON.parse(readFileSync(join(d, m.bridges.file), 'utf8')).decks as DeckData[]) {
       if (dd.k === 'rail' || dd.p.length < 2) continue;
-      const q: Piece = { k: dd.k, p: dd.p, id: pieces.length };
+      const q: Piece = { k: dd.k, p: dd.p, mesh: dd.mesh, id: pieces.length,
+        field: new Decks({ decks: [dd as ConstructorParameters<typeof Decks>[0]['decks'][number]] }) };
       pieces.push(q);
       let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
       for (const [x, z, , l, r = l] of dd.p) {
         const w = Math.max(l, r);
         x0 = Math.min(x0, x - w); x1 = Math.max(x1, x + w);
         z0 = Math.min(z0, z - w); z1 = Math.max(z1, z + w);
+      }
+      for (const [x, z] of dd.mesh?.v ?? []) {
+        x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z);
       }
       for (let cx = Math.floor(x0 / PB); cx <= Math.floor(x1 / PB); cx++) {
         for (let cz = Math.floor(z0 / PB); cz <= Math.floor(z1 / PB); cz++) {
@@ -443,7 +454,7 @@ class Window {
         const [ox, oz] = c < n ? [0, 0] : PROBE[(c - n) & 3];
         const x = cx + ox, z = cz + oz;
         const t = tileAt(x, z);
-        this.ground[c] = t?.terrain?.height(x, z) ?? NaN;
+        this.ground[c] = ground(x, z);
         this.nav[c] = (t?.nav?.passable(x, z, false) ? 1 : 0) | (t?.nav?.passable(x, z, true) ? 2 : 0);
         const decks = t?.decks;
         if (!decks) continue;
@@ -612,13 +623,24 @@ function holes(w: Window, roads: boolean): void {
       const side = (di: number, dj: number) => {
         for (let k = 1; k <= R; k++) {
           const ii = i + di * k, jj = j + dj * k;
-          if (ii < 0 || jj < 0 || ii >= nx || jj >= w.nz) return false;
-          if (usable(jj * nx + ii)) return true;
+          if (ii < 0 || jj < 0 || ii >= nx || jj >= w.nz) return -1;
+          if (usable(jj * nx + ii)) return jj * nx + ii;
         }
-        return false;
+        return -1;
       };
-      if ((side(1, 0) && side(-1, 0)) || (side(0, 1) && side(0, -1))) {
+      const heights = (cell: number) => Array.from({ length: w.hits[cell] }, (_, k) => {
+        const f = w.dflag[cell * MAX_HITS + k];
+        return (driving ? f & 4 && !(f & 1) : f & 2) ? w.dy[cell * MAX_HITS + k] : NaN;
+      }).filter(Number.isFinite);
+      const opposite = (a: number, b: number) => a >= 0 && b >= 0 && heights(a).some((ya) => heights(b).some((yb) => Math.abs(ya - yb) < 0.5));
+      if (opposite(side(1, 0), side(-1, 0)) || opposite(side(0, 1), side(0, -1))) {
         const [x, z] = w.xz(c);
+        // The inset beside a surveyed outer edge is intentional clearance
+        // from a guardrail. It is not a missing piece inside the bridge.
+        if (piecesNear(x, z).some((i) => {
+          const p = pieces[i];
+          return p.mesh && Number.isFinite(pieceAt(p, x, z)) && !Number.isFinite(pieceAt(p, x, z, driving ? 1 : 0.3));
+        })) continue;
         report('deck-hole', keyOf(x, z), x, z, `a hole in the deck ${driving ? 'for cars' : 'for walkers'}`, 1);
       }
     }
@@ -694,7 +716,7 @@ function floodBridge(group: Piece[]): void {
   if (ends.length < 2) return;
   let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
   for (const q of group) {
-    for (const [x, z] of q.p) {
+    for (const [x, z] of q.mesh?.v ?? q.p) {
       x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z);
     }
   }

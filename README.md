@@ -37,7 +37,7 @@ with the steps below and commit the result.
 |---|---|
 | `W A S D` | move · `Shift` sprint · `Space` jump |
 | `Q` `E` | turn · `R` `F` tilt the view (fully playable without a mouse) |
-| `1` `2` `3` `4` | on foot · bike · e-scooter · car |
+| `1` `2` `3` `4` `5` | on foot · bike · e-scooter · car · motorboat (on water only, near a river, canal or lake) |
 | look up and walk forward | take off; fly into the ground to land · `H` toggles flight |
 | `/` | search for an address, Enter to travel there |
 | `C` | camera: third person · close · first person |
@@ -63,9 +63,10 @@ a phone; see `docs/performance.md`.
 
 ```bash
 brew install openjdk          # OSM2World needs Java 17+
-python3 pipeline/build_world.py
-python3 pipeline/build_pois.py
-python3 pipeline/set_spawn.py 52.48475 13.38623 --face "Cafe do Brazil"   # optional
+uv venv && uv pip install -r pipeline/requirements.txt
+.venv/bin/python pipeline/build_world.py
+.venv/bin/python pipeline/build_pois.py
+.venv/bin/python pipeline/set_spawn.py 52.48475 13.38623 --face "Cafe do Brazil"   # optional
 ```
 
 `build_world.py` takes `--area E0 N0 E1 N1` (EPSG:25833 metres; the default is
@@ -73,8 +74,9 @@ Bergmannkiez and the Kreuzberg, 1.1 × 1.1 km), `--texture-res` (largest
 building texture edge, default 1024; OSM2World's own default is 512, its CC0
 textures are 2048) and `--refresh` to re-query OSM
 and the tree cadastre. OSM2World is downloaded into `tools/` on first run.
-Everything else is **standard-library Python** — no numpy, GDAL or PDAL —
-and every download is cached under `cache/`, so a rebuild takes seconds.
+Shapely/GEOS handles the offline polygon clipping and triangulation for bridges
+and shores; `inflate64` reads the south-east Berlin laser-scan archive. Every
+download is cached under `cache/`. Neither dependency runs in the browser.
 
 Output in `web/public/data/`:
 
@@ -102,7 +104,7 @@ uv venv && uv pip install -r pipeline/requirements.txt    # once
 .venv/bin/python pipeline/build_berlin.py                # the whole city, ~1,066 tiles
 ```
 
-The one package outside the standard library, `inflate64`, is for the laser
+The `inflate64` package is for the laser
 scan of south-east Berlin: `Suedost.zip` is Deflate64-compressed, which
 Python's zlib cannot read.
 
@@ -365,73 +367,91 @@ RGBA mask instead, and the terrain shader blends tiling PBR textures by it.
 Every texture is sampled twice, at its true scale and a larger rotated one,
 mixed by noise, so the tiling does not show.
 
-### Bridges
+### Bridges and riverbanks
 
-The terrain is one height per square metre, so it can hold a bridge deck or
-what runs underneath, not both. The laser scan does not count most decks as
-ground: over a road or tracks the ground beneath is in the deck's shadow, and
-hole filling used to smear deck and cutting into a wavy ramp; over water the
-river polygon painted whatever was left blue. So bridges are built on their
-own (`bridges.py`):
+Bridges are separate, open spans. Their footprints come from
+[ALKIS Berlin](https://gdi.berlin.de/services/wfs/alkis) and OSM
+`man_made=bridge` polygons; their ways, structure/material tags and surface
+types come from OpenStreetMap. Heights come from Berlin's airborne laser scan.
 
-* **Where and how wide:** OSM ways tagged `bridge=*`, for roads, paths and
-  railways, including bridges under construction. Ways that continue each
-  other are joined first, so a viaduct split into many ways is measured as
-  one. Where OSM maps the bridge's outline (`man_made=bridge`, about 1,000 in
-  Berlin), the main deck is widened to it on each side and run on to its
-  ends; other decks at the same height inside it are covered by it and
-  dropped. Elsewhere, decks side by side at one level - a carriageway and
-  its separately mapped pavements, parallel tracks - widen to meet halfway.
-* **How high:** from the laser scan. The deck level is what the middle of
-  the bridge returns along its centreline, which the deck itself covers. The
-  ends are pinned to the road carrying on past each abutment, but only if
-  that is within 4.5 m of the deck level: OSM often stops a bridge at the
-  edges of the street it spans, so just past its end can still be the
-  street below. In between, the median of the returns near the line between
-  the ends counts, so lamp posts, catenary, lorries and the bracing of a
-  truss bridge do not lift it. Under station halls and platform roofs the
-  upper returns are the roof, so they are ignored there. Where OSM says the
-  structure stands above the deck (`bridge:structure` arch, truss,
-  suspension, cable-stayed) and the street at an end lies more than 4.5 m
-  below what the middle returns, those returns are the structure, and the
-  deck runs between the streets instead (Eiswerderbrücke). Smoothing keeps
-  the pinned ends where they are, and a deck resting on the ground at both
-  ends dips at most 0.3 m below the lower one: a deeper dip is the water or
-  the bank under a footbridge the scan barely saw.
-* **Underneath:** returns at deck height are dropped before hole filling, so
-  the river or the cutting carries on below. Under the last few metres at
-  each abutment the terrain is lifted to the deck, so road and bridge meet
-  without a step.
-* **Underneath, on the ground:** roads on bridges are not painted onto the
-  ground cover, and where nothing is mapped under a deck the cover continues
-  from beside it - the river under a river bridge. The orthophoto shows the
-  deck's top, so the ground under a deck keeps its own material instead.
-* **Onto the ground:** the game lets you off a deck only onto ground the
-  navigation grid passes within a step of the deck, and a car only onto
-  drivable ground. Once a tile is built, `landings.py` makes sure there is
-  some:
-  * the drivable mask is the walkable one shrunk by the car's 2 m clearance,
-    and the bank or water under a deck's end is not walkable - which closed
-    a 2 m band of street round every road bridge. A road deck counts as room
-    for the car, and that band is drivable again;
-  * beyond a deck's end there is often a strip of steep, closed bank before
-    the street, so each free end of a road or path deck is carried on, as a
-    ramp, to the first ground within 12 m where the player's probe finds
-    room (a car's, for a road) - never under water, and not where another
-    deck already carries on;
-  * no deck lies under the water it crosses.
+* **One surface per physical span and level.** `bridgefit.py` fits the road
+  and its separately mapped pavements before terrain, furniture or tile
+  clipping. `bridge_surfaces.py` unions complete surveyed polygons with their
+  approaches and performs constrained triangulation. Concave outlines and
+  genuine polygon holes survive. An elevated railway keeps its own footprint
+  and height even when its local OSM `layer` number matches the road below.
+* **Measured approaches.** The fit uses returns near the deck level and
+  ground at its ends, rejecting roofs, trusses and overhead tracks. Each
+  segment's grade is constrained; transverse footpaths do not set the span's
+  height. Beneath elevated lines, approaches continue to surveyed ground at
+  the road's level. The entire end face joins the street, across its width.
+  Station halls and platform roofs hide the deck under them, so their returns
+  are ignored - except a hall mapped under 9 m on a lower layer than the
+  deck, which is the deck's own structure: OSM draws the U1 viaduct as
+  `building=roof`, `layer=1`, `min_height=6` under its tracks, and before
+  Warschauer Straße as a 6 m building carrying them.
+* **Matching rendering and movement.** `bridges.json` carries the actual
+  top triangles and perimeter, clipped at tile boundaries. `Decks.at` samples
+  those triangles, including bends. Tops face upward, undersides downward;
+  slab sides are emitted only around the perimeter. Older centreline-strip
+  files remain readable. A tile cut is neither a side wall nor a movement
+  barrier. The third-person camera sweeps its whole boom against decks,
+  piers and canopies, then eases back out after clearing an obstruction.
+* **Ground and objects agree.** Deck returns are removed before terrain hole
+  filling. River beds remain below the water, with proper ground contact at
+  approaches. Surface rebuilds also rebuild navigation and reposition trees
+  and surveyed furniture; road decks count toward vehicle clearance.
+* **Surface detail.** Bridge tops reuse Berlin's orthophotos, including the
+  already-streamed 20 cm image near the player. Under an upper deck, the
+  lower road uses asphalt/paving rather than a photograph of the tracks above.
+  Material tags tint the structure; lightweight railings follow exposed
+  side edges, with entrances kept open. Untagged railing dimensions are
+  visual estimates. Geometry is retained when texture detail changes.
+* **Vector shorelines.** `shorelines.py` replaces only the terrain cells
+  touching mapped water boundaries. Land and water triangles follow those
+  polygons exactly, including islands. Steep surveyed banks receive continuous
+  quay faces; low natural banks slope to the water. The replacement top
+  triangles are also the player's ground-height field. Canal walls no longer
+  inherit the saw-tooth boundary of the 1 m terrain raster.
+* **One level per reach.** `hydrography.py` fits every connected water body
+  in OSM against the whole city's laser scan, split at mapped weirs and lock
+  gates, and takes the dominant return band as its level (the lower Spree
+  30.75 m, the upper Spree and Dahme 32.35 m). Tiles take the reach's level,
+  so a river is one flat surface across 48 m blocks and tile edges; only
+  water outside a measured reach, such as a lock chamber, keeps the per-block
+  level. Behind a quay wall the ground never dips below the wall's top.
+* **Water joins at tile edges.** `stitch_water.py` welds small survey-level
+  disagreements at shared edge vertices. Interior measurements are retained,
+  larger steps remain intact, and original heights make the pass repeatable
+  after a partial rebuild.
 
-  For an existing build: `python3 pipeline/landings.py data/berlin`
-  (a minute; `--redo` takes back an earlier run's ramps first). It bumps the
-  changed tiles' versions in `world.json`.
-* **Checked by flooding:** `node scripts/check.ts --dir data/berlin` floods
-  every bridge by the game's own movement rules and reports the ones you
-  cannot cross on foot or by car, and deck ends with no ground at their
-  level, each with a picture of the flood.
-* **In the game:** each deck is a slab with the orthophoto on top, like the
-  roofs. Street furniture within 2 m of a road or path deck stands on it.
-  Height and movement checks take the player's height into account: you can
-  walk and drive across the Spree, and still drive under a railway viaduct.
+For an existing tile build:
+
+```bash
+# Rebuild surface data using cached surveys and OSM, then serve that build.
+BERLIN_OUT=data/berlin_refined .venv/bin/python pipeline/build_berlin.py \
+  --surfaces-only --tiles 390_5817 391_5817 394_5816 --workers 3
+BERLIN_DIR=berlin_refined npm run dev -- --host 127.0.0.1
+
+npm run test:bridges
+npm run check:crossings                  # actual Player/World probes, both directions
+.venv/bin/python -m unittest discover -s pipeline -p 'test_*.py'
+node scripts/check.ts --dir data/berlin_refined
+node scripts/views.ts --url http://127.0.0.1:5173/ \
+  --only mehring,mehring-under,hallesches-tor,zossener,wildenbruch,oberbaum
+```
+
+`--surfaces-only` requires existing tile manifests; `--water-only` remains an
+alias. Build without that flag for a new output directory. Tile versions in
+`world.json` change after rebuilding, so browsers fetch the new surface files.
+The checks exercise the game's triangle readers and movement probes, and the
+fixed views include the road underneath Mehringbrücke's elevated U-Bahn.
+The dev server prefers `data/berlin_refined` when that build exists;
+`BERLIN_DIR` explicitly selects another build. Decorative floodlights and
+wall-mounted fixtures in the lighting register are not rendered as streetlamp
+masts. Furniture falling into mapped water is aligned to a supporting surface
+within 2 m; placements with no such support are omitted. These adjustments are
+counted in the tile's props metadata. Original source records remain in the cache.
 
 Buildings OSM puts underground (`location=underground`, or a negative
 `layer` without `location=surface`) are left out: shops in U-Bahn stations

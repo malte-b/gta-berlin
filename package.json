@@ -10,7 +10,9 @@
     "typecheck": "tsc --noEmit",
     "bench": "node scripts/bench.ts",
     "bench:games": "node scripts/games-bench.ts",
-    "check": "node scripts/check.ts"
+    "check": "node scripts/check.ts",
+    "test:bridges": "node scripts/test-bridges.ts",
+    "check:crossings": "node scripts/crossings.ts"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",

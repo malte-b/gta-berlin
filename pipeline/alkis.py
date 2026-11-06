@@ -94,7 +94,8 @@ def load(box, cache_dir, refresh=False):
             if not rings:
                 continue
             if bwf in BRIDGE:
-                out["bridges"].append({"rings": rings, "kind": BRIDGE[bwf], "name": p.get("nam") or ""})
+                out["bridges"].append({"id": p.get("uuid") or f.get("id"), "rings": rings,
+                                       "kind": BRIDGE[bwf], "name": p.get("nam") or ""})
             elif bwf == PIER:
                 out["piers"].append(rings)
             elif bwf in CANOPY:

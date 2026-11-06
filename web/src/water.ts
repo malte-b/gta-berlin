@@ -13,6 +13,7 @@ interface WaterData {
   minZ: number;
   /** [row, [[first column, length, level in cm], ...]] */
   rows: [number, [number, number, number][]][];
+  mesh?: { v: [number, number, number][]; i: number[] };
 }
 
 const NOISE = /* glsl */`
@@ -25,9 +26,35 @@ const NOISE = /* glsl */`
   }
 `;
 
+/**
+ * Where the water is, and its level: what a boat floats on. The cells of
+ * water.json are the water's own, at its measured level; the mesh only draws
+ * them with exact shores.
+ */
+export class WaterField {
+  private readonly rows: ([number, number, number][] | undefined)[] = [];
+
+  constructor(private readonly data: WaterData) {
+    for (const [row, runs] of data.rows) this.rows[row] = runs;
+  }
+
+  /** The level at (x, z), or null on land. */
+  at(x: number, z: number): number | null {
+    const s = this.data.cell;
+    const runs = this.rows[Math.floor((z - this.data.minZ) / s)];
+    if (!runs) return null;
+    const col = Math.floor((x - this.data.minX) / s);
+    for (const [first, len, ycm] of runs) {
+      if (col < first) return null;
+      if (col < first + len) return ycm / 100;
+    }
+    return null;
+  }
+}
+
 /** Dark, glossy, with two layers of drifting ripples; uniforms.uTime animates. */
 export function waterMaterial(): THREE.MeshStandardMaterial {
-  const m = new THREE.MeshStandardMaterial({ color: 0x0f2a33, roughness: 0.07, metalness: 0.0 });
+  const m = new THREE.MeshStandardMaterial({ color: 0x17383c, roughness: 0.2, metalness: 0.0 });
   const uniforms = { uTime: { value: 0 } };
   m.userData.uniforms = uniforms;
   m.onBeforeCompile = (shader) => {
@@ -46,7 +73,7 @@ export function waterMaterial(): THREE.MeshStandardMaterial {
           vec2 p = vWaterPos.xz;
           vec2 a = vec2(wnoise(p * 0.7 + uTime * 0.3), wnoise(p * 0.7 - uTime * 0.25 + 3.1)) - 0.5;
           vec2 b = vec2(wnoise(p * 2.3 - uTime * 0.6 + 7.0), wnoise(p * 2.1 + uTime * 0.5)) - 0.5;
-          vec2 w = a * 0.5 + b * 0.2;
+          vec2 w = a * 0.16 + b * 0.07;
           vec3 T = normalize(mat3(viewMatrix) * vec3(1.0, 0.0, 0.0));
           vec3 B = normalize(mat3(viewMatrix) * vec3(0.0, 0.0, 1.0));
           normal = normalize(normal + T * w.x + B * w.y);
@@ -62,7 +89,10 @@ export function waterMesh(data: WaterData, ox: number, oz: number, mat: THREE.Ma
   const pos: number[] = [];
   const idx: number[] = [];
   const s = data.cell;
-  for (const [row, runs] of data.rows) {
+  if (data.mesh) {
+    for (const [x, z, y] of data.mesh.v) pos.push(x - ox, y, z - oz);
+    idx.push(...data.mesh.i);
+  } else for (const [row, runs] of data.rows) {
     const z0 = data.minZ + row * s - oz, z1 = z0 + s;
     for (const [col, len, ycm] of runs) {
       const x0 = data.minX + col * s - ox, x1 = x0 + len * s, y = ycm / 100;

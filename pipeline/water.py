@@ -5,10 +5,12 @@ at whatever height the terrain had: bumps where hole filling had nothing to
 go on, and water on quays and bridges wherever an OSM water area reached
 under them. Rivers and lakes are flat; so now:
 
-  - the level is measured per BLOCK-metre block of water from the scan's
-    ground returns there - the Spree returns a flat 32.3 m in Mitte - and
-    blocks with too few returns take their neighbours' level. A lock is a
-    step between blocks;
+  - the level is measured per connected water reach over the whole city
+    (hydrography.py), split at OSM's weirs and lock gates, so a river is one
+    flat surface across blocks and tiles. Water outside a measured reach is
+    measured per BLOCK-metre block from the scan's ground returns there -
+    the Spree returns a flat 32.3 m in Mitte - and blocks with too few
+    returns take their neighbours' level;
   - the terrain under the water is pushed below that level, so nothing of
     the river bed shows through;
   - water.json holds the water as runs of CELL-metre cells at their level,
@@ -149,7 +151,13 @@ def _bodies(lev, bx, bz):
 
 
 def level_at(lev, bx, nx, nz, c, r):
-    """The level for cell (c, r): its block's, or the nearest block's that has one."""
+    """The level for cell (c, r): its water reach's (hydrography.apply), else
+    its block's, or the nearest block's that has one."""
+    exact = getattr(lev, "exact", None)
+    if exact:
+        y = exact.get(r * nx + c)
+        if y is not None:
+            return y
     br, bc = r // BLOCK, c // BLOCK
     b = br * bx + bc
     if 0 <= b < len(lev) and lev[b] is not None:
@@ -168,11 +176,10 @@ def level_at(lev, bx, nx, nz, c, r):
 
 
 def settle(h, wet, lev, bx, nx, nz, under_deck):
-    """Push the terrain (absolute heights, in place) under the water below
-    its level. Under decks the bridges have their own rules."""
+    """Push the river bed below its water level, including beneath bridges."""
     n = 0
     for k in range(nx * nz):
-        if not wet[k] or under_deck[k]:
+        if not wet[k]:
             continue
         r, c = divmod(k, nx)
         y = level_at(lev, bx, nx, nz, c, r)
@@ -216,9 +223,9 @@ def _dilate(mask, nx, nz, radius):
     return out
 
 
-def write(wet, lev, bx, nx, nz, X0, Z0, x0, z0, sx, sz, out):
+def write(wet, lev, bx, nx, nz, X0, Z0, x0, z0, sx, sz, out, shape=None):
     """water.json for the tile [x0, x0+sx) x [z0, z0+sz). None if it has no water."""
-    near = _dilate(wet, nx, nz, REACH)
+    near = wet if shape is not None else _dilate(wet, nx, nz, REACH)
     cx0, cz0 = int(round(x0 - X0)), int(round(z0 - Z0))
     cols, rows = sx // CELL, sz // CELL
     out_rows = []
@@ -241,6 +248,42 @@ def write(wet, lev, bx, nx, nz, X0, Z0, x0, z0, sx, sz, out):
     if not out_rows:
         return None
     path = os.path.join(out, "water.json")
+    data = {"cell": CELL, "minX": x0, "minZ": z0, "rows": out_rows}
+    if shape is not None:
+        from shapely import box, constrained_delaunay_triangles, unary_union
+        from bridge_surfaces import polygons
+        area = shape.intersection(box(x0, z0, x0 + sx, z0 + sz))
+        # A measured reach is one flat surface across blocks and tiles; only
+        # water outside every measured reach falls back to the block levels.
+        pieces = []
+        regions = getattr(lev, "regions", ())
+        for region, y in regions:
+            pieces.extend((poly, y) for poly in polygons(area.intersection(region)))
+        rest = area.difference(unary_union([region for region, _ in regions])) if regions else area
+        for r in range(math.ceil(nz / BLOCK)):
+            for c in range(bx):
+                xx, zz = X0 + c * BLOCK, Z0 + r * BLOCK
+                if xx + BLOCK < x0 or xx > x0 + sx or zz + BLOCK < z0 or zz > z0 + sz:
+                    continue
+                for poly in polygons(rest.intersection(box(xx, zz, xx + BLOCK, zz + BLOCK))):
+                    # slivers along a reach take the reach's level, not the block's
+                    p = poly.representative_point()
+                    y = level_at(lev, bx, nx, nz, min(nx - 1, max(0, int(p.x - X0))), min(nz - 1, max(0, int(p.y - Z0))))
+                    if y is not None:
+                        pieces.append((poly, y))
+        vertices, indices = [], []
+        for poly, y in pieces:
+            for tri in constrained_delaunay_triangles(poly).geoms:
+                pts = list(tri.exterior.coords)[:3]
+                cross = (pts[1][0] - pts[0][0]) * (pts[2][1] - pts[0][1]) - (pts[1][1] - pts[0][1]) * (pts[2][0] - pts[0][0])
+                if abs(cross) < 1e-8:
+                    continue
+                if cross > 0:
+                    pts.reverse()
+                start = len(vertices)
+                vertices.extend([[round(x, 3), round(z, 3), round(y - ORIGIN_H, 3)] for x, z in pts])
+                indices.extend([start, start + 1, start + 2])
+        data["mesh"] = {"v": vertices, "i": indices, "r": []}
     with open(path, "w") as fh:
-        json.dump({"cell": CELL, "minX": x0, "minZ": z0, "rows": out_rows}, fh, separators=(",", ":"))
+        json.dump(data, fh, separators=(",", ":"))
     return {"file": "water.json", "bytes": os.path.getsize(path)}

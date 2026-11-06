@@ -272,6 +272,13 @@ def _yaw(fx, fz):
     return math.atan2(-fx, -fz)
 
 
+def is_street_lamp(properties):
+    """The lighting register includes floodlights, wall lights and cabinets.
+    Those are not free-standing streetlamp masts (notably at Oberbaumbruecke)."""
+    kind = (properties.get("leuchtentyp") or "").casefold()
+    return not any(word in kind for word in ("schaltkasten", "anstrahlung", "wand", "unterführung"))
+
+
 # --------------------------------------------------------------------------
 # traffic signs
 def sign_catalogue(jar):
@@ -390,8 +397,9 @@ def place(data, streets, jar, to_world, ground, inside, seed=1):
     # street lamps from the lighting register
     for f in data.get(LIGHTS, []):
         p = f.get("properties") or {}
-        if "Schaltkasten" in (p.get("leuchtentyp") or ""):
-            continue                    # a switch cabinet, not a lamp
+        if not is_street_lamp(p):
+            skip("lighting fixture is not a streetlamp mast")
+            continue
         for r in _rings(f.get("geometry") or {}):
             e, n = r[0]
             add("street_lamp", {"highway": "street_lamp"}, e, n, rnd.uniform(0, 2 * math.pi))

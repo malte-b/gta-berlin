@@ -157,7 +157,7 @@ export function terrainMaterial(t: GroundTextures, ortho?: OrthoTile): THREE.Mes
           float grain = luma(albedo) / max(luma(avg), 0.02);
           float near = 1.0 - smoothstep(12.0, 55.0, length(cameraPosition - vWorldPos));
           vec3 photo = photoAlbedo(texture2D(uOrtho, (wxz - uOrthoMin) / uOrthoSize).rgb);
-          albedo = photo * mix(1.0, clamp(grain, 0.4, 1.8), near * 0.75);
+          albedo = photo * mix(1.0, clamp(grain, 0.65, 1.35), near * 0.28);
           // under a bridge the photo shows its deck, cars and all: the
           // ground there keeps its own material
           vec2 uuv = (wxz - uUnderMin) / uUnderSize;
@@ -193,10 +193,100 @@ export function terrainMaterial(t: GroundTextures, ortho?: OrthoTile): THREE.Mes
           // and bitangent; take both into view space alongside the normal.
           vec3 T = normalize(mat3(viewMatrix) * vec3(1.0, 0.0, 0.0));
           vec3 B = normalize(mat3(viewMatrix) * vec3(0.0, 0.0, 1.0));
-          normal = normalize(normal + (T * tn.x + B * tn.y) * 0.7);
+          float detail = 0.18 * (1.0 - smoothstep(20.0, 90.0, length(cameraPosition - vWorldPos)));
+          normal = normalize(normal + (T * tn.x + B * tn.y) * detail);
         }
       `);
   };
+  return m;
+}
+
+/** Bridge tops share the street textures; structure has its own material.
+ *  photoMix is zero wherever the aerial survey sees another deck overhead. */
+export function bridgeMaterial(t?: GroundTextures, photo?: OrthoTile): THREE.MeshStandardMaterial {
+  const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0 });
+  m.defines = { ...(t ? { BRIDGE_GRAIN: '' } : {}), ...(photo ? { BRIDGE_PHOTO: '' } : {}) };
+  const uniforms = {
+    uBridgePhoto: { value: photo?.map ?? NOTHING_OVERHEAD },
+    uBridgeMin: { value: photo?.min ?? new THREE.Vector2() },
+    uBridgeSize: { value: photo?.size ?? 1 },
+    uBridgeDetail: { value: photo?.map ?? NOTHING_OVERHEAD },
+    uBridgeDetailMin: { value: new THREE.Vector2() },
+    uBridgeDetailSize: { value: 1 },
+    uBridgeDetailOn: { value: 0 },
+    uBridgeAsphalt: { value: t?.color.asphalt ?? NOTHING_OVERHEAD },
+    uBridgePaving: { value: t?.color.paving ?? NOTHING_OVERHEAD },
+    uBridgeAsphaltN: { value: t?.normal.asphalt ?? NOTHING_OVERHEAD },
+    uBridgePavingN: { value: t?.normal.paving ?? NOTHING_OVERHEAD },
+  };
+  m.userData.uniforms = uniforms;
+  m.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, uniforms);
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `#include <common>
+        attribute float surfaceType, photoMix;
+        varying float vSurfaceType, vPhotoMix;
+        varying vec3 vBridgePos;`)
+      .replace('#include <project_vertex>', `#include <project_vertex>
+        vBridgePos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+        vSurfaceType = surfaceType; vPhotoMix = photoMix;`);
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>
+        varying float vSurfaceType, vPhotoMix;
+        varying vec3 vBridgePos;
+        uniform sampler2D uBridgePhoto, uBridgeDetail, uBridgeAsphalt, uBridgePaving, uBridgeAsphaltN, uBridgePavingN;
+        uniform vec2 uBridgeMin, uBridgeDetailMin;
+        uniform float uBridgeSize, uBridgeDetailSize, uBridgeDetailOn;
+        ${NOISE}`)
+      .replace('#include <map_fragment>', /* glsl */`
+        vec2 bp = vBridgePos.xz;
+        bool top = vSurfaceType > 0.5 && vSurfaceType < 3.5;
+        bool paving = vSurfaceType > 1.5 && vSurfaceType < 2.5;
+        vec3 base = vec3(1.0);
+        if (top) {
+          base = paving ? vec3(0.28, 0.27, 0.24) : vec3(0.085, 0.092, 0.096);
+          #ifdef BRIDGE_GRAIN
+            base = paving ? texture2D(uBridgePaving, bp).rgb * 0.8
+                          : texture2D(uBridgeAsphalt, bp / 1.2).rgb;
+          #endif
+          #ifdef BRIDGE_PHOTO
+            vec2 uv = (bp - uBridgeMin) / uBridgeSize;
+            float inside = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
+            vec3 aerial = pow(texture2D(uBridgePhoto, uv).rgb, vec3(1.18)) * 0.62;
+            vec2 detailUV = (bp - uBridgeDetailMin) / uBridgeDetailSize;
+            if (uBridgeDetailOn > 0.5 && detailUV.x >= 0.0 && detailUV.y >= 0.0 && detailUV.x <= 1.0 && detailUV.y <= 1.0) {
+              aerial = pow(texture2D(uBridgeDetail, detailUV).rgb, vec3(1.18)) * 0.62;
+            }
+            base = mix(base, aerial, smoothstep(0.1, 0.9, vPhotoMix) * inside);
+          #endif
+        } else {
+          base *= 0.94 + 0.1 * vnoise(vec2(bp.x + bp.y, vBridgePos.y) * 1.7);
+          if (vSurfaceType > 4.5) {
+            float course = floor(vBridgePos.y / 0.42);
+            vec2 blocks = vec2((bp.x + bp.y) / 0.85 + mod(course, 2.0) * 0.5, vBridgePos.y / 0.42);
+            vec2 edge = abs(fract(blocks) - 0.5);
+            float joint = smoothstep(0.475, 0.495, max(edge.x, edge.y));
+            base *= (0.88 + 0.16 * hash21(floor(blocks))) * (1.0 - joint * 0.2);
+          }
+        }
+        diffuseColor.rgb *= base;
+      `)
+      .replace('#include <roughnessmap_fragment>', `float roughnessFactor = vSurfaceType > 3.5 && vSurfaceType < 4.5 ? 0.54 : roughness;`)
+      .replace('#include <metalnessmap_fragment>', `float metalnessFactor = vSurfaceType > 3.5 && vSurfaceType < 4.5 ? 0.45 : 0.0;`)
+      .replace('#include <normal_fragment_maps>', /* glsl */`
+        #ifdef BRIDGE_GRAIN
+          if (vSurfaceType > 0.5 && vSurfaceType < 2.5) {
+            vec3 tn = (vSurfaceType > 1.5 ? texture2D(uBridgePavingN, vBridgePos.xz).xyz
+                       : texture2D(uBridgeAsphaltN, vBridgePos.xz / 1.2).xyz) * 2.0 - 1.0;
+            vec3 T = normalize(mat3(viewMatrix) * vec3(1.0, 0.0, 0.0));
+            vec3 B = normalize(mat3(viewMatrix) * vec3(0.0, 0.0, 1.0));
+            float detail = 0.15 * (1.0 - smoothstep(20.0, 80.0, length(cameraPosition - vBridgePos)));
+            normal = normalize(normal + (T * tn.x + B * tn.y) * detail);
+          }
+        #endif
+      `);
+  };
+  m.customProgramCacheKey = () => `bridge-surfaces:${!!t}:${!!photo}`;
   return m;
 }
 

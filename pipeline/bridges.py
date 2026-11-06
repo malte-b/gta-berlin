@@ -93,7 +93,7 @@ def load(bbox_ll, cache_dir, refresh=False):
 
 def kind_of(tags):
     """road, path or rail for a bridge the game builds, else None."""
-    if tags.get("bridge") in (None, "no") or tags.get("tunnel") not in (None, "no"):
+    if tags.get("bridge") in (None, "no") or tags.get("tunnel") not in (None, "no", "building_passage"):
         return None
     hw = tags.get("highway")
     if hw == "construction":
@@ -114,12 +114,21 @@ def half_width(tags, kind):
         hw = tags.get("construction") if tags.get("construction") in groundcover.ROAD_WIDTH else "primary"
     width = groundcover.ROAD_WIDTH[hw]
     if tags.get("lanes", "").isdigit():
-        width = max(width, 3.1 * int(tags["lanes"]))
+        width = max(3.0, 3.1 * int(tags["lanes"]))
+        for side in ("left", "right"):
+            if tags.get("cycleway:" + side) == "lane":
+                try:
+                    width += float(tags.get("cycleway:%s:width" % side, "1.5"))
+                except ValueError:
+                    pass
     try:
         width = float(tags.get("width", "").replace("m", "").strip())
     except ValueError:
         pass
-    return width / 2 + (PAVEMENT if kind == "road" else 0.25)
+    sidewalk = tags.get("sidewalk") not in ("no", "none", "separate")
+    if tags.get("sidewalk:left") == "no" and tags.get("sidewalk:right") == "separate":
+        sidewalk = False
+    return width / 2 + (PAVEMENT if kind == "road" and sidewalk else 0.25)
 
 
 def _layer(tags):
@@ -139,13 +148,13 @@ def _chains(ways):
     def key(p):
         return (round(p[0], 1), round(p[1], 1))
     ends, anywhere = {}, {}
-    for i, (kind, layer, pts, _t) in enumerate(ways):
+    for i, (kind, layer, pts, _t, _meta) in enumerate(ways):
         for p in (pts[0], pts[-1]):
             ends.setdefault((kind, layer, key(p)), []).append(i)
             anywhere.setdefault(key(p), set()).add(i)
     used = [False] * len(ways)
     out = []
-    for i, (kind, layer, pts, _t) in enumerate(ways):
+    for i, (kind, layer, pts, _t, _meta) in enumerate(ways):
         if used[i]:
             continue
         used[i] = True
@@ -168,7 +177,11 @@ def _chains(ways):
                 else:
                     chain = q[::-1][:-1] + chain
         joints = tuple(bool(anywhere.get(key(p), set()) - members) for p in (chain[0], chain[-1]))
-        out.append((kind, chain, joints, layer, any(ways[m][3] for m in members)))
+        meta = {}
+        for m in sorted(members):
+            meta.update({k: v for k, v in ways[m][4].items() if v not in (None, "")})
+        meta["osm"] = sorted({w for m in members for w in ways[m][4]["osm"]})
+        out.append((kind, chain, joints, layer, any(ways[m][3] for m in members), meta))
     return out
 
 
@@ -200,7 +213,7 @@ def _beyond(st, end):
     return [(x + sign * dx * d, z + sign * dz * d, dx, dz, hw * 0.5) for d in range(2, 16)]
 
 
-def _limit_slope(ys, slope):
+def _limit_slope(ys, slope, distances=None):
     """No steeper than a road or railway can be. The ends stay put; in
     between, nothing may lie further from either end than that slope
     reaches. A piece whose ends are out of reach of each other even at twice
@@ -208,15 +221,24 @@ def _limit_slope(ys, slope):
     on different things - is no deck at all: None."""
     n = len(ys)
     a, b = ys[0], ys[-1]
-    if abs(b - a) > 2 * slope * STEP * (n - 1):
+    ds = distances or [STEP] * (n - 1)
+    run = [0.0]
+    for d in ds:
+        run.append(run[-1] + d)
+    # Reject contradictory measurements rather than make an impassable stub.
+    if abs(b - a) > slope * run[-1] + 1e-6:
         return None
     out = []
     for i, y in enumerate(ys):
-        lo = max(a - slope * STEP * i, b - slope * STEP * (n - 1 - i))
-        hi = min(a + slope * STEP * i, b + slope * STEP * (n - 1 - i))
+        lo = max(a - slope * run[i], b - slope * (run[-1] - run[i]))
+        hi = min(a + slope * run[i], b + slope * (run[-1] - run[i]))
         if lo > hi:
             lo = hi = (lo + hi) / 2
         out.append(min(max(y, lo), hi))
+    for i in range(1, n):
+        out[i] = min(max(out[i], out[i - 1] - slope * ds[i - 1]), out[i - 1] + slope * ds[i - 1])
+    for i in range(n - 2, -1, -1):
+        out[i] = min(max(out[i], out[i + 1] - slope * ds[i]), out[i + 1] + slope * ds[i])
     return out
 
 
@@ -345,12 +367,13 @@ def decks(data, ground, top, grid, covered=None, cadastre=(), abutments=()):
         return r * nx + c if 0 <= c < nx and 0 <= r < nz else -1
 
     def section(x, z, dx, dz, hw, src):
-        """Returns of one kind across the deck at a station."""
+        """Returns of one kind across the deck at a station, for the deck on
+        `layer`, the one the loop below is measuring."""
         vals = []
         o = -hw
         while o <= hw:
             k = cell(x - dz * o, z + dx * o)
-            if k >= 0 and not (src is top and covered and covered[k]):
+            if k >= 0 and not (src is top and under_hall(covered, k, layer)):
                 v = src[k]
                 if v == v and v > -1e8:
                     vals.append(v)
@@ -358,15 +381,20 @@ def decks(data, ground, top, grid, covered=None, cadastre=(), abutments=()):
         return vals
 
     ways, outlines, through = [], [], []
-    for el in data.get("elements", []):
+    elements = data.get("elements", [])
+    # Overpass/PBF order is not meaningful: outlines often follow their roads.
+    # Read them first so structure and material tags actually reach every way.
+    for el in elements:
         tags = el.get("tags", {})
         if tags.get("man_made") == "bridge" and el.get("type") == "way":
             pts = groundcover._pts(el.get("geometry", []))
             if len(pts) >= 4 and abs(pts[0][0] - pts[-1][0]) + abs(pts[0][1] - pts[-1][1]) < 0.05:
-                outlines.append(pts[:-1])
+                outlines.append({"id": "osm:%s" % el["id"], "rings": [pts[:-1]], "tags": tags,
+                                 "name": tags.get("name", "")})
                 if _through(tags):
                     through.append(pts[:-1])
-            continue
+    for el in elements:
+        tags = el.get("tags", {})
         kind = kind_of(tags) if el.get("type") == "way" else None
         if not kind:
             continue
@@ -376,12 +404,21 @@ def decks(data, ground, top, grid, covered=None, cadastre=(), abutments=()):
         hw = half_width(tags, kind)
         # an arch or truss bridge says so on its way or on its outline
         mx, mz = pts[len(pts) // 2] if len(pts) > 2 else ((pts[0][0] + pts[1][0]) / 2, (pts[0][1] + pts[1][1]) / 2)
+        outline_tags = next((o["tags"] for o in outlines if _inside(o["rings"][0], mx, mz)
+                             and _layer(o["tags"]) == _layer(tags)), {})
+        merged = {**outline_tags, **tags}
+        meta = {"osm": [el["id"]], "name": merged.get("bridge:name") or merged.get("name", ""),
+                "structure": merged.get("bridge:structure", ""),
+                "material": merged.get("bridge:material") or merged.get("material", ""),
+                "surface": tags.get("surface", ""),
+                "railing": merged.get("railing") or merged.get("handrail", ""),
+                "covered": tags.get("tunnel") == "building_passage"}
         ways.append((kind, _layer(tags), [(x, z, hw) for x, z in pts],
-                     _through(tags) or any(_inside(o, mx, mz) for o in through)))
+                     _through(tags) or any(_inside(o, mx, mz) for o in through), meta))
 
     lines = _Lines(abutments) if abutments else None
     out = []
-    for kind, chain, joints, layer, over in _chains(ways):
+    for kind, chain, joints, layer, over, meta in _chains(ways):
         st = _stations(chain)
         if len(st) < 3:
             continue
@@ -492,7 +529,7 @@ def decks(data, ground, top, grid, covered=None, cadastre=(), abutments=()):
             # arches up; a dip below both ends is the water or the bank under it
             floor = min(line[0], line[-1]) - SAG
             line = [max(v, floor) for v in line]
-        line = _limit_slope(line, MAX_SLOPE[kind])
+        line = _limit_slope(line, MAX_SLOPE[kind], [math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(st, st[1:])])
         if line is None:
             continue
         pts = [(x, z, y, hw, hw) for (x, z, _dx, _dz, hw), y in zip(st, line)]
@@ -514,15 +551,140 @@ def decks(data, ground, top, grid, covered=None, cadastre=(), abutments=()):
             pts.append((x + dx * run, z + dz * run, line[-1], hw, hw))
             if rests[1] is not None:
                 strips.append({"st": pts[-2:]})
-        out.append({"kind": kind, "layer": layer, "abut": (not joints[0], not joints[1]), "st": pts,
-                    "land": strips, "rests": sum(r is not None for r in rests)})
+        out.append({**meta, "kind": kind, "layer": layer, "abut": (not joints[0], not joints[1]), "st": pts,
+                     "land": strips, "rests": sum(r is not None for r in rests)})
     if cadastre:
+        cadastre = [c if isinstance(c, dict) else {"id": "alkis:%d" % i, "rings": [c], "name": ""}
+                    for i, c in enumerate(cadastre)]
         def covered_by_cadastre(poly):
             cx = sum(p[0] for p in poly) / len(poly)
             cz = sum(p[1] for p in poly) / len(poly)
-            return any(_inside(c, cx, cz) for c in cadastre)
-        outlines = list(cadastre) + [o for o in outlines if not covered_by_cadastre(o)]
-    return _split_cliffs(_close_gaps(_fill_outlines(out, outlines)))
+            return any(_inside(c["rings"][0], cx, cz) for c in cadastre)
+        outlines = list(cadastre) + [o for o in outlines if not covered_by_cadastre(o["rings"][0])]
+    for dk in out:
+        scores = [(sum(_inside(o["rings"][0], p[0], p[1]) for p in dk["st"]), o) for o in outlines]
+        if scores:
+            score, outline = max(scores, key=lambda pair: pair[0])
+            if score >= 3:
+                dk["outline"] = outline["id"]
+                if outline.get("name"):
+                    dk["name"] = outline["name"]
+    # Fit before carving terrain, placing furniture or clipping into tiles.
+    # Those outputs must all be derived from the same finished surface.
+    fit_upper_levels(out, ground, top, grid, covered)
+    fit_surfaces(out)
+    import bridge_surfaces
+    assembled = bridge_surfaces.assemble(out, outlines, ground, grid)
+    full = [d for d in assembled if d.get("assembled")]
+    for dk in full:
+        dk["mesh"] = bridge_surfaces.mesh_for(dk)
+    return full + _split_cliffs(_close_gaps([d for d in assembled if not d.get("assembled")]))
+
+
+def fit_surfaces(dks):
+    import bridgefit
+    data = [{**dk, "k": dk["kind"], "p": [list(p) for p in dk["st"]]} for dk in dks]
+    bridgefit.fit_decks(data)
+    for dk, fitted in zip(dks, data):
+        dk["st"] = [tuple(p) for p in fitted["p"]]
+        dk["fit"] = True
+        # Preserve the exact ground-contact strips after fitting, too.
+        dk["land"] = [{"st": [min(dk["st"], key=lambda q: math.hypot(q[0] - p[0], q[1] - p[1]))
+                              for p in strip["st"]]} for strip in dk.get("land", [])]
+
+
+def fit_upper_levels(dks, ground, top, grid, covered=None):
+    """Remeasure a mapped upper span above a known lower road/path span.
+
+    Mixed ground/top medians can select the road beneath one track. Use the
+    lower span to reject those returns, then select the upper deck's dense
+    return band. Heights still come from ALS, never from a guessed lift.
+    """
+    X0, Z0, nx, nz = grid
+    groups = {}
+    for dk in dks:
+        if dk.get("outline"):
+            groups.setdefault((dk["outline"], dk.get("layer", 1)), []).append(dk)
+    from bridge_surfaces import strip
+    shapes = {}
+    def footprint(d):
+        if id(d) not in shapes:
+            shapes[id(d)] = strip(d["st"])
+        return shapes[id(d)]
+    for (outline, layer), rails in groups.items():
+        candidates = [d for d in dks if d["kind"] != "rail" and d.get("layer", 1) < layer]
+        lower = []
+        for d in candidates:
+            if d.get("outline") == outline:
+                lower.append(d)
+                continue
+            # The two storeys of a bridge can have separate cadastral IDs
+            # (Kanzleramtssteg). A real planar overlap plus mapped ordering
+            # identifies them; mere proximity does not.
+            a = footprint(d)
+            if any(a.intersection(footprint(r)).area > min(a.area, footprint(r).area) * 0.1 for r in rails):
+                lower.append(d)
+        if not lower:
+            continue
+        roads = [d for d in lower if d["kind"] == "road"] or lower
+        floor = _median([p[2] for d in roads for p in d["st"]]) + 3.5
+        xs = [p[0] for d in roads for p in d["st"]]
+        zs = [p[1] for d in roads for p in d["st"]]
+        bounds = min(xs) - 15, min(zs) - 15, max(xs) + 15, max(zs) + 15
+
+        def returns(st):
+            result = []
+            for i, p in enumerate(st):
+                a, b = st[max(0, i - 1)], st[min(len(st) - 1, i + 1)]
+                length = math.hypot(b[0] - a[0], b[1] - a[1]) or 1
+                dx, dz = (b[0] - a[0]) / length, (b[1] - a[1]) / length
+                vals = []
+                for side in (-1, 0, 1):
+                    c, r = math.floor(p[0] - dz * side - X0), math.floor(p[1] + dx * side - Z0)
+                    if not (0 <= c < nx and 0 <= r < nz):
+                        continue
+                    k = r * nx + c
+                    for src in (ground, top):
+                        if src is top and under_hall(covered, k, layer):
+                            continue
+                        v = src[k]
+                        if math.isfinite(v) and floor < v < floor + 12:
+                            vals.append(v)
+                result.append(vals)
+            return result
+
+        measured = [returns(d["st"]) for d in rails]
+        pool = [v for d, scan in zip(rails, measured) for p, vals in zip(d["st"], scan)
+                if bounds[0] <= p[0] <= bounds[2] and bounds[1] <= p[1] <= bounds[3] for v in vals]
+        if len(pool) < 12:
+            continue
+        bins = {}
+        for y in pool:
+            bins.setdefault(round(y * 2), []).append(y)
+        mode = _median(max(bins.values(), key=len))
+        for dk, scan in zip(rails, measured):
+            ys = [_median([v for v in vals if abs(v - mode) < 1.5]) for vals in scan]
+            known = [i for i, y in enumerate(ys) if y is not None]
+            if len(known) < 3:
+                continue
+            ys[0], ys[-1] = ys[known[0]], ys[known[-1]]
+            ys = _smooth(_interp(ys), 6)
+            ds = [math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(dk["st"], dk["st"][1:])]
+            fitted = _limit_slope(ys, MAX_SLOPE[dk["kind"]], ds)
+            if fitted:
+                dk["st"] = [(p[0], p[1], y, p[3], p[4]) for p, y in zip(dk["st"], fitted)]
+                dk["height_source"] = "ALS upper-deck returns, constrained by mapped levels"
+        trusted = [d for d in rails if d.get("height_source")]
+        if trusted:
+            ref = max(trusted, key=lambda d: len(d["st"]))["st"]
+            length = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(ref, ref[1:]))
+            if math.hypot(ref[-1][0] - ref[0][0], ref[-1][1] - ref[0][1]) < max(1, length * 0.25):
+                continue
+            from bridge_surfaces import Profile
+            shared = Profile(trusted)
+            for dk in rails:
+                dk["st"] = [(x, z, shared.height(x, z), wl, wr) for x, z, _y, wl, wr in dk["st"]]
+                dk["height_source"] = "ALS shared upper-deck profile, constrained by mapped levels"
 
 
 def _split_cliffs(dks):
@@ -595,7 +757,8 @@ def _fill_outlines(dks, outlines):
     side on its own, and the other decks at about its height are cut away
     there, since the slab covers them; decks on another level - the U-Bahn
     over the Oberbaumbruecke - stay."""
-    for poly in outlines:
+    for outline in outlines:
+        poly = outline["rings"][0]
         inside = []
         for dk in dks:
             flags = [_inside(poly, p[0], p[1]) for p in dk["st"]]
@@ -620,8 +783,8 @@ def _fill_outlines(dks, outlines):
             # an outline much wider than the way is someone else's bridge
             # (a footpath under the Stadtbahn inside the viaduct's outline)
             st[i] = (x, z, y,
-                     max(wl, left) if left is not None and left <= wl + reach else wl,
-                     max(wr, right) if right is not None and right <= wr + reach else wr)
+                     max(0.1, left) if left is not None and left <= wl + reach else wl,
+                     max(0.1, right) if right is not None and right <= wr + reach else wr)
         # and lengthwise: a road line may stop well short of the bridge's
         # ends; run the slab on to the outline at the same height
         for end in (0, -1):
@@ -673,6 +836,11 @@ def _fill_outlines(dks, outlines):
             # its own measurement says (a pavement picked up a railing);
             # another layer is another level - the Stadtbahn over a street
             same = dk.get("layer") == carrier.get("layer")
+            # OSM layer is local ordering, not a city-wide height. A railway
+            # and a road can both say layer=1 while crossing on different
+            # structures (Hallesches Tor / Mehringbruecke).
+            if (dk["kind"] == "rail") != (carrier["kind"] == "rail"):
+                same = same and abs(_median([p[2] for p, inn in zip(st2, hit) if inn]) - _median([p[2] for p in cpts])) < SAME_LEVEL
             # only what the main deck really covers goes; the rest of the
             # same bridge stays, at the main deck's height
             covered = [inn and (same or abs(p[2] - level(p[0], p[1])) < SAME_LEVEL) and on_slab(p[0], p[1])
@@ -696,7 +864,7 @@ def _fill_outlines(dks, outlines):
                 runs.append(cur)
             for run in runs:
                 if len(run) >= 2:
-                    keep.append({"kind": dk["kind"], "layer": dk.get("layer"),
+                    keep.append({**dk,
                                  "st": [st2[i] for i in run],
                                  "abut": (run[0] == 0 and dk["abut"][0],
                                           run[-1] == len(st2) - 1 and dk["abut"][1])})
@@ -737,6 +905,11 @@ def _close_gaps(dks):
                 if dj == di:
                     continue
                 a, b = dks[dj]["st"][j], dks[dj]["st"][j + 1]
+                if dks[di].get("layer") != dks[dj].get("layer"):
+                    continue
+                oi, oj = dks[di].get("outline"), dks[dj].get("outline")
+                if oi and oj and oi != oj:
+                    continue
                 ex, ez = b[0] - a[0], b[1] - a[1]
                 den = dx * ez - dz * ex
                 if abs(den) < 1e-9:
@@ -777,11 +950,20 @@ def _close_gaps(dks):
     return out
 
 
+HALL_OVER_ALL = 255    # hall_mask value of a hall over every deck
+HALL_CLEAR = 9.0       # metres: a hall mapped lower cannot span an elevated track
+
+
 def hall_mask(ways, nodes, grid):
-    """1 m mask of station halls and platform roofs, from osm3d.parse_osm."""
+    """1 m mask of station halls and platform roofs, from osm3d.parse_osm:
+    per cell 0 where there is no hall, else 128 + the highest layer of deck a
+    hall there is over (see under_hall). A hall mapped lower than HALL_CLEAR
+    is over the decks on its own layer and below - no layer is layer 0 - and
+    one taller, or without a height, is over every deck."""
     from raster import Grid
     X0, Z0, nx, nz = grid
     g = Grid(X0, Z0, 1.0, nx, nz)
+    halls = []
     for _wid, (ids, tags) in ways.items():
         # station halls and platform canopies only: a raised building part
         # can be a bridge's own arcade with the U-Bahn on top (Oberbaumbruecke)
@@ -789,14 +971,38 @@ def hall_mask(ways, nodes, grid):
                 or tags.get("building:part") == "roof")
         if not hall or len(ids) < 4 or ids[0] != ids[-1]:
             continue
+        try:
+            top = float((tags.get("height") or tags["min_height"]).split()[0])
+            layer = int(tags.get("layer", "0"))
+        except (KeyError, ValueError, IndexError):
+            top = layer = None
+        if top is None or top >= HALL_CLEAR:
+            value = HALL_OVER_ALL
+        else:
+            value = 128 + max(-127, min(126, layer))
         ring = []
         for i in ids:
             if i in nodes:
                 e, n = utm33(*nodes[i])
                 ring.append((e - ORIGIN_E, -(n - ORIGIN_N)))
         if len(ring) >= 3:
-            g.polygon([ring], 1)
+            halls.append((value, ring))
+    # the highest last: it is the one that decides
+    for value, ring in sorted(halls, key=lambda h: h[0]):
+        g.polygon([ring], value)
     return g.data
+
+
+def under_hall(covered, k, layer):
+    """Whether the hall_mask cell k is a roof over a deck on this layer, so
+    the scan's upper returns there are the roof, not the deck. A low hall on
+    a lower layer is the structure beneath the deck: OSM draws the U1
+    viaduct along Skalitzer Strasse as building=roof, layer 1, min_height 6,
+    under its tracks on layer 2, and the hall before Warschauer Strasse as a
+    6 m building without a layer with the tracks on its roof. Ignoring their
+    returns put the U-Bahn on the street. Zoo's hall, 20 m tall on layer 1,
+    still spans its tracks on layer 2."""
+    return covered is not None and covered[k] >= 128 + layer
 
 
 def _near(a, b):
@@ -808,10 +1014,77 @@ def _segments(dk):
     return zip(st, st[1:])
 
 
+def edges(st):
+    """Mitred strip sections, (left, right) in x/z/y order; as Decks.sections."""
+    out = []
+    def direction(a, b):
+        d = math.hypot(b[0] - a[0], b[1] - a[1]) or 1
+        return (b[0] - a[0]) / d, (b[1] - a[1]) / d
+    for i, (x, z, y, wl, wr) in enumerate(st):
+        a = direction(st[max(0, i - 1)], st[1 if i == 0 else i])
+        b = direction(st[i - 1 if i == len(st) - 1 else i], st[min(len(st) - 1, i + 1)])
+        length = math.hypot(a[0] + b[0], a[1] + b[1])
+        dx, dz = ((a[0] + b[0]) / length, (a[1] + b[1]) / length) if length > 1e-6 else b
+        m = 1 / max(0.5, dx * b[0] + dz * b[1])
+        out.append(((x - dz * wl * m, z + dx * wl * m, y), (x + dz * wr * m, z - dx * wr * m, y)))
+    return out
+
+
+def triangle_height(x, z, a, b, c):
+    ex, ez, fx, fz = b[0] - a[0], b[1] - a[1], c[0] - a[0], c[1] - a[1]
+    det = ex * fz - ez * fx
+    if abs(det) < 1e-9:
+        return None
+    u = ((x - a[0]) * fz - (z - a[1]) * fx) / det
+    v = (ex * (z - a[1]) - ez * (x - a[0])) / det
+    if u >= -1e-8 and v >= -1e-8 and u + v <= 1 + 1e-8:
+        return a[2] + u * (b[2] - a[2]) + v * (c[2] - a[2])
+    return None
+
+
+class SurfaceIndex:
+    """Spatial lookup of the actual deck triangles, for terrain and props."""
+    CELL = 32
+
+    def __init__(self, dks):
+        self.buckets = {}
+        for dk in dks:
+            mesh = dk.get("mesh")
+            if mesh:
+                vs, ix = mesh["v"], mesh["i"]
+                quads = [(vs[ix[i]], vs[ix[i + 1]], vs[ix[i + 2]], vs[ix[i]]) for i in range(0, len(ix), 3)]
+            else:
+                es = edges(dk["st"])
+                quads = [(al, bl, br, ar) for (al, ar), (bl, br) in zip(es, es[1:])]
+            for q in quads:
+                for c in range(math.floor(min(v[0] for v in q) / self.CELL), math.floor(max(v[0] for v in q) / self.CELL) + 1):
+                    for r in range(math.floor(min(v[1] for v in q) / self.CELL), math.floor(max(v[1] for v in q) / self.CELL) + 1):
+                        self.buckets.setdefault((c, r), []).append(q)
+
+    def height(self, x, z):
+        best = None
+        for a, b, c, d in self.buckets.get((math.floor(x / self.CELL), math.floor(z / self.CELL)), ()):
+            y = triangle_height(x, z, a, b, c)
+            if y is None:
+                y = triangle_height(x, z, a, c, d)
+            if y is not None and (best is None or y > best):
+                best = y
+        return best
+
+
 def _rasterise(dks, grid, margin, fn):
     """Call fn(k, deck height) for each cell within a deck (plus margin)."""
     X0, Z0, nx, nz = grid
     for dk in dks:
+        if dk.get("assembled") and "_shape" in dk:
+            from bridge_surfaces import polygons
+            from raster import cells
+            shape = dk["_shape"].buffer(margin, join_style="mitre") if margin else dk["_shape"]
+            for part in polygons(shape):
+                rings = [list(part.exterior.coords)] + [list(r.coords) for r in part.interiors]
+                for k in cells(rings, X0, Z0, 1, nx, nz):
+                    fn(k, dk["_profile"].height(X0 + k % nx + 0.5, Z0 + k // nx + 0.5))
+            continue
         for (ax, az, ay, al, ar), (bx, bz, by, bl, br) in _segments(dk):
             seg2 = (bx - ax) ** 2 + (bz - az) ** 2
             if seg2 < 1e-9:
@@ -887,10 +1160,83 @@ def clearer(dks, grid):
             under = THICK[dk["kind"]] + UNDER_GAP
 
             def cap(k, y):
-                if k not in exempt and h[k] > y - under:
-                    h[k] = y - under
+                ceiling = y - (0.06 if k in exempt else under)
+                if h[k] > ceiling:
+                    h[k] = ceiling
             _rasterise([dk], grid, 0.0, cap)
     return clear, settle
+
+
+def blend_landings(dks, h, wet, grid):
+    """Blend the last metres of surveyed approaches into the surrounding road.
+    A local terrain pit/kerb must not become a step at a slab's square end."""
+    from shapely import Point, unary_union
+    from bridge_surfaces import polygons
+    from raster import cells
+    X0, Z0, nx, nz = grid
+    for dk in dks:
+        contacts = [s["_shape"] for s in dk.get("land", []) if "_shape" in s]
+        if not contacts:
+            continue
+        contact = unary_union(contacts)
+        for part in polygons(contact.buffer(3, join_style="mitre")):
+            rings = [list(part.exterior.coords)] + [list(r.coords) for r in part.interiors]
+            for k in cells(rings, X0, Z0, 1, nx, nz):
+                if wet[k]:
+                    continue
+                x, z = X0 + k % nx + 0.5, Z0 + k // nx + 0.5
+                y = dk["_profile"].height(x, z) - 0.06
+                if abs(h[k] - y) > 1.5:
+                    continue
+                t = min(1, contact.distance(Point(x, z)) / 3)
+                t = t * t * (3 - 2 * t)
+                h[k] = y * (1 - t) + h[k] * t
+
+
+def split_carried(dks, wet):
+    """Split decks into (slabs, carried). A road or path deck whose middle lies
+    over water - wet(x, z) - is carried by the ground itself: the terrain is
+    raised to its height (stamp) and painted like any street, so there is no
+    slab, no pit cut round it and no cliff where slab meets bank. Everything
+    else - rail, and decks over streets and tracks, where the terrain cannot
+    hold the deck - stays a slab."""
+    slabs, carried = [], []
+    for dk in dks:
+        st = dk["st"][1:-1]
+        if dk["kind"] == "rail" or len(st) < 3:
+            slabs.append(dk)
+            continue
+        over = sum(1 for q in st if wet(q[0], q[1]))
+        (carried if over >= 0.5 * len(st) else slabs).append(dk)
+    return slabs, carried
+
+
+def fit_carried(dks):
+    """bridgefit.py on carried decks (their stations are tuples here)."""
+    import bridgefit
+    as_json = [{"k": dk["kind"], "p": [list(q) for q in dk["st"]]} for dk in dks]
+    bridgefit.fit_decks(as_json)
+    for dk, fj in zip(dks, as_json):
+        dk["st"] = [tuple(q) for q in fj["p"]]
+
+
+def stamp(dks, h, grid):
+    """Set the terrain h (a 1 m grid, row-major) under the decks to their height.
+    Returns {cell: is_road} for the cells set."""
+    best, road = {}, {}
+
+    def put_for(is_road):
+        def put(k, y):
+            if y > best.get(k, -1e9):
+                best[k] = y
+            if is_road:
+                road[k] = True
+        return put
+    for dk in dks:
+        _rasterise([dk], grid, 0.0, put_for(dk["kind"] == "road"))
+    for k, y in best.items():
+        h[k] = y
+    return {k: road.get(k, False) for k in best}
 
 
 def mask(dks, grid):
@@ -923,21 +1269,12 @@ def surface(dks, grid, base, kinds=("road", "path")):
     """base(x, z) with road and path decks on top (world heights), for things
     that stand on bridges: lamps, signs, benches. Rail decks are left out:
     streets under railway viaducts are far more common than lamps on them."""
-    X0, Z0, nx, nz = grid
-    top = {}
-
-    def put(k, y):
-        y -= ORIGIN_H
-        if y > top.get(k, -1e9):
-            top[k] = y
-    _rasterise([d for d in dks if d["kind"] in kinds], grid, RAIL_SIDE, put)
+    index = SurfaceIndex([d for d in dks if d["kind"] in kinds])
 
     def height(x, z):
-        c, r = int(math.floor(x - X0)), int(math.floor(z - Z0))
-        if 0 <= c < nx and 0 <= r < nz:
-            y = top.get(r * nx + c)
-            if y is not None:
-                return y
+        y = index.height(x, z)
+        if y is not None:
+            return y - ORIGIN_H
         return base(x, z)
     return height
 
@@ -1021,6 +1358,15 @@ def write(dks, x0, z0, sx, sz, out, pier_list=(), roofs=()):
     nothing in it. Piers and roofs belong to the tile their centre lies in."""
     items = []
     for dk in dks:
+        meta = {k: dk[k] for k in ("osm", "outline", "name", "layer", "structure", "material", "surface", "railing", "covered", "fit", "assembled", "axis", "height_source") if k in dk}
+        if dk.get("assembled"):
+            from bridge_surfaces import mesh_for
+            mesh = mesh_for(dk, (x0, z0, x0 + sx, z0 + sz), ORIGIN_H)
+            if mesh is not None:
+                items.append({**meta, "k": dk["kind"], "t": THICK[dk["kind"]], "mesh": mesh,
+                              "p": [[round(x, 3), round(z, 3), round(y - ORIGIN_H, 3), round(wl, 3), round(wr, 3)]
+                                    for x, z, y, wl, wr in dk["st"]]})
+            continue
         # Cut at the tile's edge plus the deck's width: a wide slab crossing
         # the edge at an angle, cut along its centreline, leaves wedges of
         # river between the two tiles' halves. The overlap is the same
@@ -1028,10 +1374,9 @@ def write(dks, x0, z0, sx, sz, out, pier_list=(), roofs=()):
         m = max(max(p[3], p[4]) for p in dk["st"]) + 1.0
         for run in _clip(dk["st"], x0 - m, z0 - m, x0 + sx + m, z0 + sz + m):
             # every other station is plenty for the mesh; keep the run's ends
-            pts = run[::2] if len(run) > 4 else run
-            if pts[-1] is not run[-1]:
-                pts = pts + [run[-1]]
-            items.append({"k": dk["kind"], "t": THICK[dk["kind"]],
+            pts = run
+            items.append({**meta,
+                          "k": dk["kind"], "t": THICK[dk["kind"]],
                           "p": [[round(x, 2), round(z, 2), round(y - ORIGIN_H, 2),
                                  round(wl, 2), round(wr, 2)] for x, z, y, wl, wr in pts]})
     def mine(ring):

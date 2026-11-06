@@ -25,6 +25,7 @@ street 2 m wide around it where no car may go, just where cars get on and
 off. A road deck counts as room for the car here, and the cells it frees are
 made drivable (open_drive). No deck lies under the water it crosses
 (keep_dry), and the holes between decks are patched over (patch_holes).
+Before all that bridgefit.py gives the decks of one bridge one height.
 
     python3 pipeline/landings.py data/berlin_v3                    # every tile
     python3 pipeline/landings.py data/berlin_v3 --tiles 393_5819 --dry-run
@@ -41,6 +42,9 @@ import os
 import struct
 from array import array
 
+import bridgefit
+import bridges
+
 STEP_UP = 1.0            # as in web/src/world.ts
 CLEARANCE = 2            # cells, as build_world's --car-clearance
 WALK, DRIVE, BUILDING = 1, 2, 16
@@ -55,6 +59,7 @@ PROBE = 0.6              # the player's probe reaches 0.4 m round it; this much 
 JOIN = 3.0               # a deck at the end's level this close ahead: carried on into it
 JOIN_OVERLAP = 0.75      # ... and this far over it, so square ends leave no sliver
 HOLE = 2.0               # no deck between decks this far apart: a hole, patched over
+CLEAR = 0.4              # a deck the data puts under water is lifted to this far above it
 
 
 class Grid:
@@ -100,7 +105,9 @@ class Water:
     """water.json: the water surface's level per cell, None where it is dry."""
 
     def __init__(self, path, size):
-        d = json.load(open(path))
+        with open(path) as fh:
+            d = json.load(fh)
+        self.mesh = bridges.SurfaceIndex([{"mesh": d["mesh"]}]) if d.get("mesh") else None
         self.min_x, self.min_z, self.cell = d["minX"], d["minZ"], d["cell"]
         self.n = round(size / d["cell"])
         self.level = {}
@@ -110,6 +117,8 @@ class Water:
                     self.level[row * self.n + c] = ycm / 100
 
     def at(self, x, z):
+        if self.mesh:
+            return self.mesh.height(x, z)
         c = math.floor((x - self.min_x) / self.cell)
         r = math.floor((z - self.min_z) / self.cell)
         if c < 0 or r < 0 or c >= self.n or r >= self.n:
@@ -197,6 +206,12 @@ def open_drive(nav, decks):
     for dk in decks:
         if dk["k"] != "road":
             continue
+        if dk.get("mesh"):
+            from raster import cells
+            mesh = dk["mesh"]
+            rings = [[mesh["v"][i][:2] for i in ring] for ring in mesh["r"]]
+            deck.update(k for k in cells(rings, nav.min_x, nav.min_z, cell, nx, nz) if not flags[k] & BUILDING)
+            continue
         p = [q if len(q) >= 5 else q[:4] + [q[3]] for q in dk["p"]]
         for a, b in zip(p, p[1:]):
             ex, ez = b[0] - a[0], b[1] - a[1]
@@ -281,7 +296,7 @@ def patch_holes(decks, nav, square):
         car.setdefault(k, False)
 
     for dk in decks:
-        if dk["k"] == "rail" or dk.get("patch"):
+        if dk["k"] == "rail" or dk.get("patch") or dk.get("assembled"):
             continue
         road = dk["k"] == "road"
         p = [q if len(q) >= 5 else q[:4] + [q[3]] for q in dk["p"]]
@@ -387,14 +402,46 @@ def keep_dry(decks, water):
         return 0
     n = 0
     for dk in decks:
-        if dk["k"] == "rail":
+        if dk["k"] == "rail" or dk.get("assembled"):
             continue
         for q in dk["p"]:
             w = water.at(q[0], q[1])
-            if w is not None and q[2] < w + DRY:
-                q[2] = round(w + DRY + 0.01, 2)
+            if w is not None and q[2] < w + CLEAR:
+                q[2] = round(w + CLEAR, 2)
                 n += 1
     return n
+
+
+def carry_nav(out, manifest, cells):
+    """Write what build_world.carried_nav worked out into nav.bin: ground that
+    carries a bridge is land, not water, for the player. Walkable where the
+    slope allows (a bridge's edge, one steep cell, is its parapet); drivable
+    where the 5 x 5 cells round it are all walkable - the walkable mask
+    shrunk by the car's clearance, as build_world does - and it is road, or
+    ground that was not carried. Buildings stay as they were."""
+    nm = manifest["nav"]
+    path = os.path.join(out, nm["file"])
+    nx, nz = nm["nx"], nm["nz"]
+    nav = Grid(path, flags=True)
+    f = nav.flags
+    for (c, r), (walk, _road, _carried) in cells.items():
+        k = r * nx + c
+        if f[k] & BUILDING:
+            continue
+        f[k] = (f[k] | WALK | 4 | 8) if walk else (f[k] & ~(WALK | DRIVE))
+    def walkable(c, r):
+        return not (0 <= c < nx and 0 <= r < nz) or f[r * nx + c] & WALK
+    for (c, r), (walk, road, carried) in cells.items():
+        k = r * nx + c
+        if f[k] & BUILDING:
+            continue
+        drive = walk and (road or not carried) and all(
+            walkable(c + i, r + j) for i in range(-CLEARANCE, CLEARANCE + 1)
+            for j in range(-CLEARANCE, CLEARANCE + 1))
+        f[k] = (f[k] | DRIVE) if drive else (f[k] & ~DRIVE)
+    with open(path, "r+b") as fh:
+        fh.seek(nav.head)
+        fh.write(f)
 
 
 def unland(decks):
@@ -409,6 +456,134 @@ def unland(decks):
             dk["p"] = dk["p"][1:]
 
 
+def rebase_props(out, manifest):
+    """Place existing surveyed furniture on the final terrain/deck triangles."""
+    meta = manifest.get("props")
+    if not meta:
+        return 0
+    path = os.path.join(out, meta["file"])
+    with open(path, "rb") as fh:
+        raw = bytearray(fh.read())
+    if raw[:4] != b"BPR1":
+        raise ValueError("not a props file: " + path)
+    n, = struct.unpack_from("<I", raw, 4)
+    # Correct older files made before the lighting register's fixture types
+    # were distinguished. Keep the source positions; discard invented masts
+    # at records for small/structure-mounted floodlights and control boxes.
+    area = manifest.get("area")
+    if area and "street_lamp" in meta.get("kinds", []):
+        import street_furniture
+        from geo import ORIGIN_E, ORIGIN_N
+        source = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cache", "furniture",
+                              "furniture_%d_%d_%d_%d.json" % tuple(area[k] for k in ("e0", "n0", "e1", "n1")))
+        if os.path.exists(source):
+            ignored = set()
+            with open(source) as fh:
+                lighting = json.load(fh).get(street_furniture.LIGHTS, [])
+            for feature in lighting:
+                if street_furniture.is_street_lamp(feature.get("properties") or {}):
+                    continue
+                for ring in street_furniture._rings(feature.get("geometry") or {}):
+                    e, north = ring[0]
+                    ignored.add((round(e - ORIGIN_E, 1), round(ORIGIN_N - north, 1)))
+            columns = [struct.unpack_from("<%df" % n, raw, 8 + j * n * 4) for j in range(4)]
+            kinds = struct.unpack_from("<%dH" % n, raw, 8 + n * 16)
+            lamp = meta["kinds"].index("street_lamp")
+            keep = [i for i in range(n) if kinds[i] != lamp or (round(columns[0][i], 1), round(columns[1][i], 1)) not in ignored]
+            if len(keep) != n:
+                n = len(keep)
+                raw = bytearray(b"BPR1" + struct.pack("<I", n))
+                for col in columns:
+                    raw += struct.pack("<%df" % n, *[col[i] for i in keep])
+                raw += struct.pack("<%dH" % n, *[kinds[i] for i in keep])
+                meta["count"] = n
+                with open(path, "wb") as fh:
+                    fh.write(raw)
+    xs = struct.unpack_from("<%df" % n, raw, 8)
+    zs = struct.unpack_from("<%df" % n, raw, 8 + n * 4)
+    bpath = os.path.join(out, "bridges.json")
+    data = {"decks": []}
+    if manifest.get("bridges") and os.path.exists(bpath):
+        with open(bpath) as fh:
+            data = json.load(fh)
+    dks = [{"st": [p if len(p) >= 5 else p + [p[3]] for p in d["p"]], "mesh": d.get("mesh")}
+           for d in data["decks"] if d["k"] != "rail"]
+    index = bridges.SurfaceIndex(dks)
+    terrain = Grid(os.path.join(out, manifest["terrain"]["file"]))
+    bank_index = None
+    if manifest.get("shorelines"):
+        with open(os.path.join(out, manifest["shorelines"]["file"])) as fh:
+            bank = json.load(fh)
+        bank_index = bridges.SurfaceIndex([{"mesh": bank["top"]}])
+    water = Water(os.path.join(out, manifest["water"]["file"]), manifest["nav"]["nx"] * manifest["nav"]["cell"]) if manifest.get("water") else None
+    nav = Grid(os.path.join(out, manifest["nav"]["file"]), flags=True)
+
+    def surface(x, z):
+        y = index.height(x, z)
+        if y is None and bank_index:
+            y = bank_index.height(x, z)
+        return terrain.height(x, z) if y is None else y
+
+    def dry(x, z):
+        y = surface(x, z)
+        w = water.at(x, z) if water else None
+        return w is None or y >= w + 0.1
+
+    changed = aligned = 0
+    removed = set()
+    for i, (x, z) in enumerate(zip(xs, zs)):
+        if not dry(x, z):
+            # Independent surveys disagree near bridge parapets by around a
+            # metre. Align to a supporting surface within a bounded 2 m; do
+            # not put a mast on the river bed or invent a long cantilever.
+            target = None
+            for step in range(1, 9):
+                radius = step * 0.25
+                for angle in range(16):
+                    a = angle * math.tau / 16
+                    px, pz = x + math.cos(a) * radius, z + math.sin(a) * radius
+                    flag = nav.flag(px, pz)
+                    if flag is None or flag & BUILDING:
+                        continue
+                    if all(dry(px + dx, pz + dz) for dx, dz in ((0, 0), (0.25, 0), (-0.25, 0), (0, 0.25), (0, -0.25))):
+                        target = px, pz
+                        break
+                if target:
+                    break
+            if target is None:
+                removed.add(i)
+                continue  # unsupported/stale street-furniture placement
+            x, z = target
+            struct.pack_into("<f", raw, 8 + i * 4, x)
+            struct.pack_into("<f", raw, 8 + n * 4 + i * 4, z)
+            aligned += 1
+        y = surface(x, z)
+        offset = 8 + n * 8 + i * 4
+        old, = struct.unpack_from("<f", raw, offset)
+        if abs(y - old) > 0.01:
+            struct.pack_into("<f", raw, offset, y)
+            changed += 1
+    if removed:
+        keep = [i for i in range(n) if i not in removed]
+        columns = [struct.unpack_from("<%df" % n, raw, 8 + j * n * 4) for j in range(4)]
+        kinds = struct.unpack_from("<%dH" % n, raw, 8 + n * 16)
+        n = len(keep)
+        raw = bytearray(b"BPR1" + struct.pack("<I", n))
+        for col in columns:
+            raw += struct.pack("<%df" % n, *[col[i] for i in keep])
+        raw += struct.pack("<%dH" % n, *[kinds[i] for i in keep])
+        meta["count"] = n
+    if aligned or removed:
+        placement = meta.setdefault("placement", {"aligned": 0, "unsupported": 0})
+        placement["aligned"] += aligned
+        placement["unsupported"] += len(removed)
+    if changed or aligned or removed:
+        with open(path + ".part", "wb") as fh:
+            fh.write(raw)
+        os.replace(path + ".part", path)
+    return changed + aligned + len(removed)
+
+
 def land_decks(decks, terrain, nav, water, square):
     """Carry the free ends of the road and path decks on to their landings.
     A deck carried on says so in "landed", [start, end], and is not carried
@@ -421,7 +596,7 @@ def land_decks(decks, terrain, nav, water, square):
         boxes.append((min(v[0] for v in pts) - w, max(v[0] for v in pts) + w,
                       min(v[1] for v in pts) - w, max(v[1] for v in pts) + w))
     for dk in decks:
-        if dk["k"] == "rail" or len(dk["p"]) < 2:
+        if dk["k"] == "rail" or dk.get("assembled") or len(dk["p"]) < 2:
             continue
         p = [q if len(q) >= 5 else q[:4] + [q[3]] for q in dk["p"]]
         landed = dk.get("landed", [False, False])
@@ -507,6 +682,7 @@ def land_tile(out, manifest, dry_run=False, redo=False):
     before = json.dumps(data["decks"])
     if redo:
         unland(data["decks"])
+    bridgefit.fit_decks(data["decks"])
     keep_dry(data["decks"], water)
     n = land_decks(data["decks"], terrain, nav, water, square)
     if not any(dk.get("patch") for dk in data["decks"]):
@@ -516,6 +692,7 @@ def land_tile(out, manifest, dry_run=False, redo=False):
             json.dump(data, fh, separators=(",", ":"))
         os.replace(path + ".part", path)
         meta["bytes"] = os.path.getsize(path)
+        meta["count"] = len(data["decks"])
     return n
 
 

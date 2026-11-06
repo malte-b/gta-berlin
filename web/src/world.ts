@@ -30,6 +30,9 @@ const STEP_UP = 1.0;
  *  more than the span of a Berlin block's courtyards. */
 const OPEN_REACH = 160;
 const STEPS = [[1, 0], [-1, 0], [0, 1], [0, -1]] as const;
+/** A deck's top this little above the water is too low to pass under by
+ *  boat, metres: the boat's height and the deck's own thickness. */
+const BOAT_HEADROOM = 2.5;
 
 /** world.json: either one area (pipeline/build_world.py) or the index of a
  *  tiled build (pipeline/build_berlin.py). */
@@ -295,10 +298,45 @@ export class World {
     return null;
   }
 
+  /** The water level at (x, z), or null on land and off the loaded tiles. */
+  waterAt(x: number, z: number): number | null {
+    return this.tileAt(x, z)?.water?.at(x, z) ?? null;
+  }
+
+  /**
+   * May a boat floating at `level` be at (x, z)? On the same water - a lock
+   * or a weir is a wall - and not where a deck comes down within
+   * BOAT_HEADROOM of the water: under most bridges there is room.
+   */
+  navigable(x: number, z: number, level: number): boolean {
+    const w = this.waterAt(x, z);
+    if (w === null || Math.abs(w - level) > 0.3) return false;
+    for (const d of this.tileAt(x, z)?.decks?.at(x, z) ?? []) {
+      if (d.y > level - 0.5 && d.y < level + BOAT_HEADROOM) return false;
+    }
+    return true;
+  }
+
+  /** The nearest water to (x, z) within maxR metres that `fits`, if any. */
+  nearestWater(x: number, z: number, maxR = 250,
+               fits: (x: number, z: number) => boolean = () => true): XZ | null {
+    const ok = (px: number, pz: number) => this.waterAt(px, pz) !== null && fits(px, pz);
+    if (ok(x, z)) return [x, z];
+    for (let r = 2; r <= maxR; r += 2) {
+      const steps = Math.max(8, Math.round(Math.PI * r));
+      for (let a = 0; a < steps; a++) {
+        const th = (a / steps) * Math.PI * 2;
+        const px = x + Math.cos(th) * r, pz = z + Math.sin(th) * r;
+        if (ok(px, pz)) return [px, pz];
+      }
+    }
+    return null;
+  }
+
   /** Bare-earth ground height in world metres. */
   private ground(x: number, z: number): number {
     const t = this.tileAt(x, z);
-    if (t?.terrain) return t.terrain.height(x, z);
+    if (t?.terrain) return t.groundHeight(x, z);
     // off the loaded world: hold the nearest edge's height
     let best: Tile | null = null;
     let bd = Infinity;
@@ -309,8 +347,8 @@ export class World {
     }
     if (!best?.terrain) return 0;
     const f = best.terrain;
-    return f.height(Math.min(Math.max(x, f.minX), f.minX + f.nx - 1),
-                    Math.min(Math.max(z, f.minZ), f.minZ + f.nz - 1));
+    return best.groundHeight(Math.min(Math.max(x, f.minX), f.minX + f.nx - 1),
+                             Math.min(Math.max(z, f.minZ), f.minZ + f.nz - 1));
   }
 
   /** The level a street running along `dir` has at (x, z): a deck going the
@@ -433,6 +471,7 @@ export class World {
    *  boom in rather than let it clip into a wall. */
   blocksCamera(x: number, y: number, z: number): boolean {
     if (y < this.height(x, z) + 0.55) return true;
+    if (this.tileAt(x, z)?.decks?.blocksCamera(x, y, z)) return true;
     return this.nav.has(x, z, NavGrid.BUILDING);
   }
 

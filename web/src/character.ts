@@ -766,6 +766,89 @@ export function makeScooter(): THREE.Group {
   return g;
 }
 
+/** The cockpit's floor and the driver's bench, metres above the waterline. */
+export const BOAT = { sole: 0.12, seatY: 0.78, seatZ: -0.7 };
+
+/**
+ * An open motorboat, bow at +Z, the waterline at y 0: a pointed hull, open
+ * cockpit, windscreen, wheel, a bench and the outboard motor at the stern -
+ * the boats hired out on the Spree. The hull is its plan extruded upward,
+ * the cockpit a hole in the upper half.
+ */
+export function makeBoat(): THREE.Group {
+  const g = new THREE.Group();
+  const white = mat(0xf1efe8, 0.45);
+  const blue = mat(0x1f4e79, 0.5);
+  const teak = mat(0x9a6a3e, 0.7);
+  const dark = mat(0x26292f, 0.5);
+  const glass = mat(0x2b3a48, 0.08, { metalness: 0.6, transparent: true, opacity: 0.55 });
+
+  // the plan, as THREE.Shape x and y, y towards the bow: turned a quarter
+  // about X, y runs to +Z and the extrusion downwards from the top
+  const plan = (inset: number) => {
+    const w = 0.98 - inset, stern = -2.35 + inset, bow = 2.55 - inset * 1.6, shoulder = 0.7;
+    const sh = new THREE.Shape();
+    sh.moveTo(-w, stern);
+    sh.lineTo(w, stern);
+    sh.lineTo(w, shoulder);
+    sh.quadraticCurveTo(w, bow - 0.6, 0, bow);
+    sh.quadraticCurveTo(-w, bow - 0.6, -w, shoulder);
+    sh.closePath();
+    return sh;
+  };
+  const hull = (shape: THREE.Shape, y0: number, y1: number, m: THREE.Material, key: string) => {
+    const mesh = new THREE.Mesh(geo(key, () => new THREE.ExtrudeGeometry(shape, {
+      depth: y1 - y0, bevelEnabled: true, bevelThickness: 0.03, bevelSize: 0.03, bevelSegments: 2, curveSegments: 10,
+    }).rotateX(Math.PI / 2).translate(0, y1, 0)), m);
+    return mesh;
+  };
+  // below the rub rail: the painted bottom, narrower at the keel
+  const bottom = hull(plan(0.08), -0.32, 0.06, blue, 'boat-bottom');
+  // above it the topsides, open over the cockpit
+  const top = plan(0);
+  const cockpit = new THREE.Path();
+  cockpit.moveTo(-0.8, -2.15);
+  cockpit.lineTo(0.8, -2.15);
+  cockpit.lineTo(0.8, 0.85);
+  cockpit.quadraticCurveTo(0.8, 1.15, 0.5, 1.15);
+  cockpit.lineTo(-0.5, 1.15);
+  cockpit.quadraticCurveTo(-0.8, 1.15, -0.8, 0.85);
+  cockpit.closePath();
+  top.holes.push(cockpit);
+  const sides = hull(top, 0.06, 0.52, white, 'boat-sides');
+  const floor = block(1.6, 0.04, 3.25, 0.02, teak);
+  floor.position.set(0, BOAT.sole, -0.5);
+  g.add(bottom, sides, floor);
+
+  // the driver's bench, a console with the wheel ahead of it, the windscreen
+  const bench = block(1.5, BOAT.seatY - BOAT.sole, 0.5, 0.05, teak);
+  bench.position.set(0, (BOAT.seatY + BOAT.sole) / 2, BOAT.seatZ - 0.05);
+  const console_ = block(0.55, 0.62, 0.42, 0.06, white);
+  console_.position.set(0, BOAT.sole + 0.31, 0.12);
+  const wheelRing = new THREE.Mesh(geo('boat-wheel', () => new THREE.TorusGeometry(0.17, 0.018, 6, 20)), dark);
+  wheelRing.position.set(0, 0.88, -0.02);
+  wheelRing.rotation.x = -0.5;
+  const screen = block(1.5, 0.36, 0.03, 0.015, glass);
+  screen.position.set(0, 0.7, 1.05);
+  screen.rotation.x = -0.45;
+  g.add(bench, console_, wheelRing, screen);
+
+  // the outboard motor hung on the transom, its leg in the water
+  const cowl = block(0.36, 0.42, 0.46, 0.1, dark);
+  cowl.position.set(0, 0.72, -2.55);
+  const cap = block(0.3, 0.06, 0.38, 0.03, white);
+  cap.position.set(0, 0.95, -2.55);
+  g.add(cowl, cap, rod({ x: 0, y: 0.52, z: -2.52 }, { x: 0, y: -0.45, z: -2.52 }, 0.05, dark));
+
+  // navigation lights: red to port, green to starboard
+  for (const [x, c] of [[0.62, 0xd8261c], [-0.62, 0x2fbf4a]] as const) {
+    const lamp = block(0.06, 0.05, 0.1, 0.02, mat(c, 0.3, { emissive: c, emissiveIntensity: 0.9 }));
+    lamp.position.set(x, 0.56, 1.5);
+    g.add(lamp);
+  }
+  return g;
+}
+
 /** A small hatchback, nose at +Z: body, glass cabin, lights, bumpers. */
 export function makeCar(): THREE.Group {
   const g = new THREE.Group();

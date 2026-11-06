@@ -28,18 +28,19 @@ const LAND_COOLDOWN = 0.5;      // stops an immediate re-launch on touchdown
  *
  * `nav` picks which mask in the navigation grid a mode is tested against: a
  * car needs the eroded drivable mask, while a person, a bike and a scooter all
- * fit anywhere you can stand. `stride` is how many metres of travel make one
+ * fit anywhere you can stand. A boat needs neither: it floats on the water
+ * (World.navigable). `stride` is how many metres of travel make one
  * full animation cycle, so limbs stay locked to the ground at any speed. On
  * foot that is the stride of a walk: a run's is longer, so the steps do not
  * turn into a blur (see updateFoot).
  */
-export type Mode = 'foot' | 'bike' | 'scooter' | 'car';
+export type Mode = 'foot' | 'bike' | 'scooter' | 'car' | 'boat';
 
 export interface ModeConfig {
   label: string;
   cruise: number;
   sprint: number;
-  nav: 'walk' | 'drive';
+  nav: 'walk' | 'drive' | 'water';
   stride: number;
   eye: number;
 }
@@ -49,6 +50,7 @@ export const MODES: Record<Mode, ModeConfig> = {
   bike:    { label: 'on a bike', cruise: 6.8,  sprint: 13.5, nav: 'walk',  stride: 3.10, eye: 1.55 },
   scooter: { label: 'on an e-scooter', cruise: 6.2, sprint: 8.4, nav: 'walk', stride: 2.4, eye: 1.78 },
   car:     { label: 'driving',   cruise: 46.0, sprint: 46.0, nav: 'drive', stride: 4.0,  eye: 1.15 },
+  boat:    { label: 'by boat',   cruise: 9.0,  sprint: 15.0, nav: 'water', stride: 4.0,  eye: 1.4 },
 };
 
 // the sleigh, metres per second and metres above the ground
@@ -63,6 +65,20 @@ const CAR_ACCEL = 13.0;
 const CAR_BRAKE = 22.0;
 const CAR_REVERSE = -11.0;
 const CAR_DRAG = 0.42;
+
+// a motorboat: slow to get going, it keeps sliding through a turn and steers
+// by its rudder, so hardly at all at rest
+const BOAT_ACCEL = 3.2;
+const BOAT_BRAKE = 4.5;
+const BOAT_REVERSE = -3.0;
+const BOAT_DRAG = 1.1;
+const BOAT_TURN = 1.15;         // radians per second, at full rudder authority
+const BOAT_GRIP = 2.2;          // how fast the motion follows the bow, per second
+/** Where boarding looks for water, metres. */
+const BOAT_REACH = 250;
+/** Points of the hull, metres [ahead, to the right]: all of them on water. */
+const HULL: [number, number][] = [[2.5, 0], [1.4, -0.7], [1.4, 0.7], [0, -0.95], [0, 0.95],
+                                  [-2.3, -0.85], [-2.3, 0.85]];
 
 // bikes and scooters roll rather than stopping dead
 const RIDE_ACCEL = 9.0;
@@ -84,6 +100,7 @@ export class Player {
   launched = false;
   strideDist = 0;       // metres travelled, drives the animation phase
   private footPhase = 0; // on foot, the phase itself: the stride grows with speed
+  private boomDistance: number | null = null;
   /**
    * How far a touch joystick is pushed, 0 to 1, or null with keys. On foot
    * it sets the pace: a little walks, more jogs, the edge (which also holds
@@ -109,6 +126,7 @@ export class Player {
   get inCar() { return this.mode === 'car'; }
   get riding() { return this.mode === 'bike' || this.mode === 'scooter'; }
   get vehicle() { return this.mode !== 'foot'; }
+  get boating() { return this.mode === 'boat'; }
   get driving() { return this.cfg.nav === 'drive'; }
 
   get speedKmh() {
@@ -124,6 +142,13 @@ export class Player {
 
   spawn(x: number, z: number): void {
     const w = this.world;
+    if (this.boating) {
+      this.pos.set(x, w.height(x, z), z);
+      this.vel.set(0, 0, 0);
+      this.speed = 0;
+      this.settle(BOAT_REACH);
+      return;
+    }
     const [fx, fz] = w.freeSpot(x, z, 200, this.driving);
     this.pos.set(fx, w.height(fx, fz), fz);
     this.vel.set(0, 0, 0);
@@ -138,13 +163,35 @@ export class Player {
    */
   setMode(mode: string): Mode {
     if (!(mode in MODES)) return this.mode;
+    // a boat needs water to float on: none near, no boat
+    if (mode === 'boat' && !this.canBoat()) return this.mode;
     this.mode = mode as Mode;
     this.flying = false;
-    this.settle(140);
     this.heading = this.yaw;
+    this.settle(this.boating ? BOAT_REACH : 140);
     this.speed = 0;
     this.vel.set(0, 0, 0);
     return this.mode;
+  }
+
+  /** Is there water near enough to take a boat out on? */
+  canBoat(): boolean {
+    return this.boatSpot(BOAT_REACH) !== null;
+  }
+
+  /** The nearest water within maxR the hull fits on, and a heading it fits
+   *  at: across a narrow canal, along it. */
+  private boatSpot(maxR: number): [number, number, number] | null {
+    let heading = this.heading;
+    const fits = (x: number, z: number) => {
+      for (let i = 0; i < 8; i++) {
+        heading = this.heading + i * Math.PI / 4;
+        if (this.afloat(x, z, heading)) return true;
+      }
+      return false;
+    };
+    const at = this.world.nearestWater(this.pos.x, this.pos.z, maxR, fits);
+    return at && [at[0], at[1], heading];
   }
 
   toggleMode(mode: Mode): Mode {
@@ -207,6 +254,7 @@ export class Player {
     this.pitchInput(keys, dt);
     if (this.sleigh) return this.updateSleigh(dt, keys);
     if (this.flying) return this.updateFly(dt, keys);
+    if (this.boating) return this.updateBoat(dt, keys);
     if (this.vehicle) return this.updateVehicle(dt, keys);
     return this.updateFoot(dt, keys);
   }
@@ -311,6 +359,77 @@ export class Player {
 
     this.strideDist += Math.abs(this.speed) * dt;
     this.pos.y = w.height(this.pos.x, this.pos.z, this.pos.y);
+    this.yaw = this.heading;
+    this.onGround = true;
+  }
+
+  /** Does the whole hull float on the same water, the bow pointing along heading? */
+  private afloat(x: number, z: number, heading = this.heading, level?: number): boolean {
+    const w = this.world;
+    const y = level ?? w.waterAt(x, z);
+    if (y === null) return false;
+    // forward is (-sin, -cos), right is (cos, -sin)
+    const s = Math.sin(heading), c = Math.cos(heading);
+    return HULL.every(([f, r]) => w.navigable(x - s * f + c * r, z - c * f - s * r, y));
+  }
+
+  private updateBoat(dt: number, keys: Set<string>): void {
+    const w = this.world;
+    const cfg = this.cfg;
+    const level = w.waterAt(this.pos.x, this.pos.z) ?? this.pos.y;
+    const top = ((keys.has('ShiftLeft') || keys.has('ShiftRight')) ? cfg.sprint : cfg.cruise) * this.speedScale;
+    const throttle = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0);
+    if (throttle > 0) this.speed += BOAT_ACCEL * dt;
+    else if (throttle < 0) this.speed -= (this.speed > 0 ? BOAT_BRAKE : BOAT_ACCEL * 0.5) * dt;
+    else this.speed -= Math.sign(this.speed) * Math.min(Math.abs(this.speed), BOAT_DRAG * dt);
+    this.speed = Math.max(BOAT_REVERSE, Math.min(top, this.speed));
+
+    const steer = Math.max(-1, Math.min(1,
+      (keys.has('KeyA') ? 1 : 0) - (keys.has('KeyD') ? 1 : 0) + this.turnInput(keys)));
+    const v = Math.abs(this.speed);
+    const authority = Math.min(1, 0.2 + v / 3) / (1 + v * 0.04);
+    const heading = this.heading + steer * dt * BOAT_TURN * authority * (this.speed < -0.1 ? -1 : 1);
+    // a turn into the bank does not happen; pinned against it, the boat backs
+    // off a few centimetres as it comes round, so the rudder frees it
+    if (heading !== this.heading) {
+      const s = Math.sin(heading), c = Math.cos(heading);
+      for (const back of [0, 0.04, 0.1, 0.2]) {
+        const x = this.pos.x + s * back, z = this.pos.z + c * back;
+        if (this.afloat(x, z, heading, level)) {
+          this.heading = heading;
+          this.pos.x = x;
+          this.pos.z = z;
+          break;
+        }
+      }
+    }
+    this.lean += (-steer * Math.min(0.12, v * 0.012) - this.lean) * Math.min(1, dt * 3);
+
+    // the hull's motion follows its bow only gradually: it drifts
+    const k = 1 - Math.exp(-BOAT_GRIP * dt);
+    this.vel.x += (-Math.sin(this.heading) * this.speed - this.vel.x) * k;
+    this.vel.z += (-Math.cos(this.heading) * this.speed - this.vel.z) * k;
+    this.vel.y = 0;
+
+    // half-metre steps, sliding along a bank like everything else does
+    const dx = this.vel.x * dt, dz = this.vel.z * dt;
+    const n = Math.max(1, Math.ceil(Math.hypot(dx, dz) / 0.5));
+    let hit = false;
+    for (let i = 0; i < n; i++) {
+      const nx = this.pos.x + dx / n, nz = this.pos.z + dz / n;
+      if (this.afloat(nx, nz, this.heading, level)) { this.pos.x = nx; this.pos.z = nz; continue; }
+      hit = true;
+      if (this.afloat(nx, this.pos.z, this.heading, level)) { this.pos.x = nx; this.vel.z = 0; continue; }
+      if (this.afloat(this.pos.x, nz, this.heading, level)) { this.pos.z = nz; this.vel.x = 0; continue; }
+      // head on into the bank: a bump back
+      this.vel.set(0, 0, 0);
+      this.speed *= -0.25;
+      break;
+    }
+    if (hit) this.speed *= Math.pow(0.15, dt * 4);
+
+    this.strideDist += v * dt;
+    this.pos.y = w.waterAt(this.pos.x, this.pos.z) ?? level;
     this.yaw = this.heading;
     this.onGround = true;
   }
@@ -433,6 +552,17 @@ export class Player {
    */
   private settle(maxR: number, open = true): void {
     const w = this.world;
+    if (this.boating) {
+      const at = this.boatSpot(maxR);
+      if (at) {
+        this.pos.set(at[0], w.waterAt(at[0], at[1])!, at[1]);
+        this.heading = this.yaw = at[2];
+        this.vel.set(0, 0, 0);
+        return;
+      }
+      // come down away from the water: on foot again
+      this.mode = 'foot';
+    }
     const y = w.height(this.pos.x, this.pos.z, this.pos.y);
     if (w.deckAt(this.pos.x, this.pos.z, y, this.driving ? 1.0 : 0.3, this.driving)) {
       this.pos.y = y;
@@ -444,8 +574,9 @@ export class Player {
     this.pos.y = w.height(this.pos.x, this.pos.z);
   }
 
-  applyCamera(cam: THREE.PerspectiveCamera): THREE.Vector3 {
+  applyCamera(cam: THREE.PerspectiveCamera, dt = 1 / 60): THREE.Vector3 {
     if (this.sleigh) {
+      this.boomDistance = null;
       // a chase camera behind and above the reindeer
       const s = Math.sin(this.yaw), c = Math.cos(this.yaw);
       const at = new THREE.Vector3(this.pos.x - s * 6, this.pos.y + 2, this.pos.z - c * 6);
@@ -456,6 +587,7 @@ export class Player {
       return at;
     }
     if (this.flying) {
+      this.boomDistance = null;
       cam.position.set(this.pos.x, this.pos.y, this.pos.z);
       cam.rotation.set(0, 0, 0);
       cam.rotateY(this.yaw);
@@ -466,6 +598,7 @@ export class Player {
     const head = new THREE.Vector3(this.pos.x, this.pos.y + eye, this.pos.z);
 
     if (this.camMode === 2) {
+      this.boomDistance = null;
       cam.position.copy(head);
       cam.rotation.set(0, 0, 0);
       cam.rotateY(this.yaw);
@@ -481,7 +614,7 @@ export class Player {
     // slightly downward resting pitch.
     const w = this.world;
     const radius = this.camMode === 0
-      ? (this.mode === 'car' ? 11.5 : (this.riding ? 7.4 : 6.4))
+      ? (this.mode === 'car' ? 11.5 : this.boating ? 10.5 : (this.riding ? 7.4 : 6.4))
       : 3.4;
     const cp = Math.cos(this.pitch);
     const dir = new THREE.Vector3(
@@ -490,17 +623,23 @@ export class Player {
       Math.cos(this.yaw) * cp,
     );
 
-    // Camera collision shortens the boom instead of lifting the camera.
-    // Raising it would change the view angle, which is exactly the coupling
-    // this rewrite is removing.
+    // Sweep the whole boom: testing only its endpoint lets it pass through
+    // an elevated deck and emerge above it while the player stays below.
     let r = radius;
     const probe = new THREE.Vector3();
-    for (let i = 0; i < 10; i++) {
-      probe.copy(head).addScaledVector(dir, r);
-      if (!w.blocksCamera(probe.x, probe.y, probe.z)) break;
-      r *= 0.78;
-      if (r < 1.4) { r = 1.4; break; }
+    for (let distance = 0.4; distance <= radius + 0.35; distance += 0.35) {
+      const d = Math.min(distance, radius);
+      probe.copy(head).addScaledVector(dir, d);
+      if (w.blocksCamera(probe.x, probe.y, probe.z)) {
+        r = Math.max(0.35, d - 0.3);
+        break;
+      }
+      if (d === radius) break;
     }
+    // Pull in immediately for clearance; ease back out after leaving a span.
+    const previous = this.boomDistance ?? r;
+    r = r <= previous ? r : previous + (r - previous) * (1 - Math.exp(-12 * dt));
+    this.boomDistance = r;
 
     // Orientation is never set directly - it is always derived from lookAt, the
     // same way a real spring-arm camera works. Whatever the collision loop did

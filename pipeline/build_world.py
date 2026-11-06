@@ -47,6 +47,8 @@ import street_furniture                                          # noqa: E402
 import trees as trees_mod                                        # noqa: E402
 import water as water_mod                                        # noqa: E402
 import alkis                                                     # noqa: E402
+import shorelines                                                # noqa: E402
+import hydrography                                               # noqa: E402
 from geo import ORIGIN_E, ORIGIN_H, ORIGIN_N, utm33_inv          # noqa: E402
 from raster import Grid                                          # noqa: E402
 
@@ -204,6 +206,9 @@ ATTRIBUTION = [
     "Bauen und Wohnen Berlin (dl-de/zero-2.0)",
     "Buildings, streets, green space: (c) OpenStreetMap contributors (ODbL), "
     "3D models by OSM2World",
+    "Bridge outlines, abutments and piers: Geoportal Berlin / ALKIS Berlin (dl-de/zero-2.0); "
+    "bridge structure and surface tags: (c) OpenStreetMap contributors (ODbL)",
+    "Shorelines: (c) OpenStreetMap contributors (ODbL); bank elevations: ALS Berlin (dl-de/zero-2.0)",
 ]
 
 
@@ -270,7 +275,7 @@ def build(area, out, args, margin=0, log=log):
     cad = alkis.load((E0, N0, E1, N1), os.path.join(CACHE, "alkis"), args.refresh)
     decks = bridges.decks(bridges.load(bbox_ll, os.path.join(CACHE, "osm"), args.refresh),
                           graw, traw, grid, bridges.hall_mask(ways, nodes, grid),
-                          cadastre=[b["rings"][0] for b in cad["bridges"]], abutments=cad["abutments"])
+                          cadastre=cad["bridges"], abutments=cad["abutments"])
     log("  %d deck ends moved to their abutments" % sum(d.get("rests", 0) for d in decks))
     roofs = alkis.roofs(cad, graw, traw, grid, alkis.osm_mask(ways, nodes, grid))
     phantoms = alkis.phantoms(cad, nodes, ways, graw, traw, grid)
@@ -282,13 +287,16 @@ def build(area, out, args, margin=0, log=log):
     log("  %d decks: %s" % (len(decks), ", ".join(
         "%d %s" % (sum(d["kind"] == k for d in decks), k) for k in ("road", "path", "rail"))))
 
+    # Every bridge is a separate, open span. A heightfield can represent only
+    # one surface: stamping the deck into it closes the river/road beneath.
+    gdata = groundcover.load(bbox_ll, os.path.join(CACHE, "osm"), args.refresh)
+
     # --- terrain: ALS ground returns ---------------------------------------
     log("Terrain from the airborne laser scan ...")
     clear, settle = bridges.clearer(decks, grid)
     h, nx, nz, measured, raised = als.terrain(E0, N0, E1, N1, acache, clear=clear, settle=settle)
     # --- ground cover ------------------------------------------------------
     log("Ground cover from OpenStreetMap ...")
-    gdata = groundcover.load(bbox_ll, os.path.join(CACHE, "osm"), args.refresh)
     cover, passages, counts, water = groundcover.build(
         gdata, X0, Z0, nx, nz, os.path.join(out, "cover.png"), bridges.footprint(decks, grid))
     log("  %(road)d roads, %(path)d paths, %(green)d green areas, %(water)d water" % counts
@@ -300,7 +308,14 @@ def build(area, out, args, margin=0, log=log):
     wet = [water.get(X0 + (k % nx) + 0.5, Z0 + (k // nx) + 0.5) > 127 for k in range(n)]
     under_deck = bridges.mask(decks, grid)
     wlev, wbx = water_mod.levels(wet, graw, nx, nz, under_deck)
+    wlev = hydrography.apply(wlev, (X0, Z0, nx, nz), CACHE)
     sunk = water_mod.settle(h, wet, wlev, wbx, nx, nz, under_deck)
+    bridges.blend_landings(decks, h, wet, grid)
+    road_surfaces = bridges.SurfaceIndex([d for d in decks if d["kind"] != "rail"])
+    shore_meta = shorelines.build(gdata, h, grid, wlev, wbx, (x0, z0, x0 + sx, z0 + sz), out, road_surfaces.height)
+    settle(h, nx, nz)  # bank smoothing must not push ground back through a deck
+    if shore_meta:
+        log("  shorelines: %d terrain cells replaced by %d clipped land/quay triangles" % (shore_meta["cells"], shore_meta["triangles"]))
     del graw
     measured_w = [v for v in wlev if v is not None]
     log("  %d blocks of water, levels %s; %d terrain cells pushed under the surface"
@@ -324,17 +339,26 @@ def build(area, out, args, margin=0, log=log):
         log("  -> bridges.json: %d deck pieces (%.0f KB)" % (bmeta["count"], bmeta["bytes"] / 1024))
     elif os.path.exists(os.path.join(out, "bridges.json")):
         os.remove(os.path.join(out, "bridges.json"))
-    wmeta = water_mod.write(wet, wlev, wbx, nx, nz, X0, Z0, x0, z0, sx, sz, out)
+    wmeta = water_mod.write(wet, wlev, wbx, nx, nz, X0, Z0, x0, z0, sx, sz, out,
+                            shorelines.water_polygons(gdata, (x0, z0, x0 + sx, z0 + sz)))
     if wmeta:
         log("  -> water.json (%.0f KB)" % (wmeta["bytes"] / 1024))
     elif os.path.exists(os.path.join(out, "water.json")):
         os.remove(os.path.join(out, "water.json"))
     if getattr(args, "water_only", False):
-        # terrain and water redone; the caller patches them into tile.json
+        # A surface rebuild must update the navigation and the things standing
+        # on it, too. Keeping old flags leaves invisible walls at new landings.
+        shapes = osm3d.footprints(nodes, ways, rels, phantoms)
+        solid = Grid(X0, Z0, 1.0, nx, nz)
+        for rings in shapes:
+            solid.polygon(rings, 1)
+        feats = trees_mod.load(e0, n0, e1, n1, os.path.join(CACHE, "trees"), args.refresh)
+        tmeta, tree_list = trees_mod.build(feats, to_world, terr.height, in_tile, os.path.join(out, "trees.bin"))
+        nmeta, _nav = write_navigation(terr, solid, passages, tree_list, wet, args, margin, sx, sz, out, log)
         return {"terrain": {"file": "terrain.bin", "minX": x0, "minZ": z0, "cell": 1.0,
                             "nx": keep.nx, "nz": keep.nz,
                             "hmin": round(hmin, 2), "hmax": round(hmax, 2)},
-                "bridges": bmeta, "water": wmeta, "cover": cover}, None
+                 "bridges": bmeta, "water": wmeta, "shorelines": shore_meta, "cover": cover, "trees": tmeta, "nav": nmeta}, None
 
     # --- orthophotos -------------------------------------------------------
     log("True orthophotos (20 cm) ...")
@@ -437,62 +461,7 @@ def build(area, out, args, margin=0, log=log):
 
     # --- navigation --------------------------------------------------------
     log("Navigation grid ...")
-    # courtyard gateways: ways mapped through a building stay open
-    for pts in passages:
-        solid.polyline(pts, 1.4, 0)
-    trunk = bytearray(n)
-    canopy = Grid(X0, Z0, 1.0, nx, nz)
-    for tx, tz, _th, crown, _d in tree_list:
-        c, r = int(tx - X0), int(tz - Z0)
-        if 0 <= c < nx and 0 <= r < nz:
-            trunk[r * nx + c] = 1
-        canopy.disc(tx, tz, crown * 0.5, 1)
-    log("  %d building outlines, %d passages cut through them"
-        % (len(shapes), len(passages)))
-
-    hgt = terr.h
-    steep = [False] * n
-    for r in range(nz):
-        for c in range(nx):
-            k = r * nx + c
-            d = 0.0
-            if c + 1 < nx:
-                d = abs(hgt[k + 1] - hgt[k])
-            if r + 1 < nz:
-                d = max(d, abs(hgt[k + nx] - hgt[k]))
-            steep[k] = d > args.max_slope
-    blocked = [solid.data[k] or trunk[k] or wet[k] for k in range(n)]
-    walk = [not blocked[k] and not steep[k] for k in range(n)]
-    # close pinholes and drop specks, then re-apply the hard obstacles: no
-    # tidying may make the inside of a wall walkable
-    walk = ng._mask_filter(walk, nx, nz, 1, True)
-    walk = ng._mask_filter(walk, nx, nz, 1, False)
-    walk = [walk[k] and not blocked[k] for k in range(n)]
-    seen, comps = ng.components(walk, nx, nz)
-    keep_ids = {cid for cells, cid in comps if cells >= 400} | ({comps[0][1]} if comps else set())
-    walk = [walk[k] and seen[k] in keep_ids for k in range(n)]
-    nwalk = sum(walk)
-    log("  walkable %.1f%% of the area, %d regions kept, largest %.1f%%"
-        % (100 * nwalk / n, len(keep_ids), 100 * comps[0][0] / max(nwalk, 1) if comps else 0))
-    drive = ng._mask_filter(walk, nx, nz, args.car_clearance, False)
-    log("  drivable %.1f%% of walkable" % (100 * sum(drive) / max(nwalk, 1)))
-
-    sky_raw = [not solid.data[k] and not canopy.data[k] for k in range(n)]
-    sky_open = ng._mask_filter(sky_raw, nx, nz, 4, False)
-    flags = bytearray(n)
-    for k in range(n):
-        flags[k] = ((ng.WALKABLE if walk[k] else 0) | (ng.DRIVABLE if drive[k] else 0)
-                    | (ng.OPEN_SKY if sky_open[k] else 0) | (ng.SKY_RAW if sky_raw[k] else 0)
-                    | (ng.BUILDING if solid.data[k] else 0))
-    hnav = terr.h
-    if margin:
-        def cut(v):
-            return crop(v, nx, margin, margin, sx, sz)
-        flags = bytearray(cut(list(flags)))
-        hnav, walk, drive, sky_open = cut(hnav), cut(walk), cut(drive), cut(sky_open)
-    nblob, nmeta = ng.to_bytes(x0, z0, 1.0, sx, sz, hnav, flags)
-    with open(os.path.join(out, "nav.bin"), "wb") as fh:
-        fh.write(nblob)
+    nmeta, nav = write_navigation(terr, solid, passages, tree_list, wet, args, margin, sx, sz, out, log)
 
     # --- manifest ----------------------------------------------------------
     world = [x0, round(hmin, 1), z0, x0 + sx, round(hmax + bst["tallest"], 1), z0 + sz]
@@ -513,22 +482,70 @@ def build(area, out, args, margin=0, log=log):
                            for k in GROUND_TEXTURES},
         "trees": tmeta,
         "props": pmeta,
-        "nav": {"file": "nav.bin", "cell": 1.0, "nx": sx, "nz": sz,
-                "minX": x0, "minZ": z0, **nmeta},
+        "nav": nmeta,
         "attribution": ATTRIBUTION,
     }
     if bmeta:
         manifest["bridges"] = bmeta
     if wmeta:
         manifest["water"] = wmeta
+    if shore_meta:
+        manifest["shorelines"] = shore_meta
     if bst["buildings"]:
         manifest["buildings"] = {
             "file": "buildings.glb", "chunk": CHUNK, "chunks": bst["chunks"],
             "count": bst["buildings"], "triangles": bst["triangles"], "bytes": bst["bytes"],
             "packed": True}
-    nav = {"walk": walk, "drive": drive, "sky_open": sky_open,
-           "nx": sx, "nz": sz, "x0": x0, "z0": z0}
     return manifest, nav
+
+
+def write_navigation(terr, solid, passages, tree_list, wet, args, margin, sx, sz, out, log=log):
+    """The same navigation build for full builds and terrain/water rebuilds."""
+    nx, nz, X0, Z0 = terr.nx, terr.nz, terr.x0, terr.z0
+    n = nx * nz
+    for pts in passages:
+        solid.polyline(pts, 1.4, 0)
+    trunk = bytearray(n)
+    canopy = Grid(X0, Z0, 1.0, nx, nz)
+    for tx, tz, _th, crown, _d in tree_list:
+        c, r = int(tx - X0), int(tz - Z0)
+        if 0 <= c < nx and 0 <= r < nz:
+            trunk[r * nx + c] = 1
+        canopy.disc(tx, tz, crown * 0.5, 1)
+    hgt = terr.h
+    walk = []
+    blocked = [solid.data[k] or trunk[k] or wet[k] for k in range(n)]
+    for r in range(nz):
+        for c in range(nx):
+            k = r * nx + c
+            rise = max(abs(hgt[k + 1] - hgt[k]) if c + 1 < nx else 0,
+                       abs(hgt[k + nx] - hgt[k]) if r + 1 < nz else 0)
+            walk.append(not blocked[k] and rise <= args.max_slope)
+    walk = ng._mask_filter(walk, nx, nz, 1, True)
+    walk = ng._mask_filter(walk, nx, nz, 1, False)
+    walk = [walk[k] and not blocked[k] for k in range(n)]
+    seen, comps = ng.components(walk, nx, nz)
+    keep_ids = {cid for cells, cid in comps if cells >= 400} | ({comps[0][1]} if comps else set())
+    walk = [walk[k] and seen[k] in keep_ids for k in range(n)]
+    drive = ng._mask_filter(walk, nx, nz, args.car_clearance, False)
+    sky_raw = [not solid.data[k] and not canopy.data[k] for k in range(n)]
+    sky_open = ng._mask_filter(sky_raw, nx, nz, 4, False)
+    flags = bytearray((ng.WALKABLE if walk[k] else 0) | (ng.DRIVABLE if drive[k] else 0)
+                      | (ng.OPEN_SKY if sky_open[k] else 0) | (ng.SKY_RAW if sky_raw[k] else 0)
+                      | (ng.BUILDING if solid.data[k] else 0) for k in range(n))
+    hnav = terr.h
+    if margin:
+        def cut(v):
+            return crop(v, nx, margin, margin, sx, sz)
+        flags = bytearray(cut(list(flags)))
+        hnav, walk, drive, sky_open = cut(hnav), cut(walk), cut(drive), cut(sky_open)
+    x0, z0 = X0 + margin, Z0 + margin
+    nblob, nmeta = ng.to_bytes(x0, z0, 1.0, sx, sz, hnav, flags)
+    with open(os.path.join(out, "nav.bin"), "wb") as fh:
+        fh.write(nblob)
+    log("  navigation rebuilt: %.1f%% walkable, %.1f%% drivable" % (100 * sum(walk) / len(walk), 100 * sum(drive) / len(drive)))
+    return {"file": "nav.bin", "cell": 1.0, "nx": sx, "nz": sz, "minX": x0, "minZ": z0, **nmeta}, \
+        {"walk": walk, "drive": drive, "sky_open": sky_open, "nx": sx, "nz": sz, "x0": x0, "z0": z0}
 
 
 def pick_spawn(nav, old):

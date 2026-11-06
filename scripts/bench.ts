@@ -28,6 +28,7 @@ const phone = args.includes('--phone');
 const profile = args.includes('--profile');
 const url = opt('--url', 'http://localhost:5173/');
 const out = opt('--out', `bench-${phone ? 'phone' : 'desktop'}.json`);
+const at = opt('--at', '') ? opt('--at', '').split(',').map(Number) : null;
 const chromePath = process.env.CHROME
   ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const PORT = 9334;
@@ -40,7 +41,10 @@ const chrome = spawn(chromePath, [
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 interface Target { type: string; webSocketDebuggerUrl: string }
-interface Reply { id?: number; method?: string; params?: { encodedDataLength: number };
+interface Reply { id?: number; method?: string; params?: { encodedDataLength?: number;
+                   type?: string; args?: { value?: unknown; description?: string }[];
+                   exceptionDetails?: { text?: string; exception?: { description?: string } };
+                   entry?: { level?: string; source?: string; text?: string } };
                   result?: { result?: { value?: unknown }; profile?: unknown } }
 let targets: Target[] | undefined;
 for (let i = 0; i < 50 && !targets; i++) {
@@ -51,10 +55,14 @@ await new Promise((r) => ws.addEventListener('open', r));
 let id = 0;
 const pending = new Map<number, (m: Reply) => void>();
 let bytes = 0;
+const errors: string[] = [];
 ws.addEventListener('message', (e) => {
   const m = JSON.parse(String(e.data)) as Reply;
   if (m.id && pending.has(m.id)) { pending.get(m.id)!(m); pending.delete(m.id); }
-  if (m.method === 'Network.loadingFinished') bytes += m.params!.encodedDataLength;
+  if (m.method === 'Network.loadingFinished') bytes += m.params?.encodedDataLength ?? 0;
+  if (m.method === 'Runtime.exceptionThrown') errors.push(m.params?.exceptionDetails?.exception?.description ?? m.params?.exceptionDetails?.text ?? 'runtime exception');
+  if (m.method === 'Runtime.consoleAPICalled' && m.params?.type === 'error') errors.push((m.params.args ?? []).map((a) => String(a.value ?? a.description ?? '')).join(' ').slice(0, 1500));
+  if (m.method === 'Log.entryAdded' && m.params?.entry?.level === 'error' && m.params.entry.source === 'rendering') errors.push(m.params.entry.text ?? 'rendering error');
 });
 const send = (method: string, params: object = {}) => new Promise<Reply>((r) => {
   const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method, params }));
@@ -64,11 +72,13 @@ const ev = async <T = unknown>(expression: string): Promise<T> =>
   (await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })).result?.result?.value as T;
 
 await send('Runtime.enable');
+await send('Log.enable');
 await send('Page.enable');
 await send('Network.enable');
 await send('Network.setCacheDisabled', { cacheDisabled: true });
 if (phone) {
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+  await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
   await send('Emulation.setCPUThrottlingRate', { rate: 4 });
 }
 
@@ -100,6 +110,17 @@ await ev(`(() => {
   return 1;
 })()`);
 await sleep(6000);
+if (at) {
+  await ev(`(async () => {
+    const { world: w, player: p } = window.__berlin;
+    await w.ensure(${at[0]}, ${at[1]});
+    p.pos.set(${at[0]}, w.height(${at[0]}, ${at[1]}, 5), ${at[1]});
+    p.yaw = p.heading = 0; p.pitch = -0.12; p.flying = false;
+    return 1;
+  })()`);
+  await sleep(6000);
+}
+results.input = await ev(`({ touch: matchMedia('(pointer: coarse)').matches, touchPoints: navigator.maxTouchPoints, at: [window.__berlin.player.pos.x, window.__berlin.player.pos.z] })`);
 
 // what the scene holds: texture and geometry bytes, JS heap
 const memory = `(() => {
@@ -178,6 +199,7 @@ if (profile) {
 // looking out over the city from 300 m: everything in range is loaded
 results.air = await scenario('overview from 300 m', camera(500, 300, 3500, 1500, 1500, -0.5), 15);
 
+results.errors = [...new Set(errors)];
 writeFileSync(out, JSON.stringify(results, null, 1));
 for (const k of ['street', 'fly', 'air'] as const) {
   const r = results[k]!, m = r.memory;
@@ -188,3 +210,4 @@ for (const k of ['street', 'fly', 'air'] as const) {
 console.log(`load ${results.loadSeconds}s, ${results.loadMB} MB -> ${out}`);
 ws.close();
 chrome.kill();
+if (errors.length) { console.error('Browser errors:', results.errors); process.exitCode = 1; }

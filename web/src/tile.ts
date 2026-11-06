@@ -2,13 +2,14 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { Decks } from './bridges';
-import { waterMaterial, waterMesh } from './water';
+import { Shorelines, type ShoreData } from './shorelines';
+import { WaterField, waterMaterial, waterMesh } from './water';
 import { breathe, upload } from './frames';
 import { closeOnUpload, freeOnUpload, shareMaterialTextures, sharedTextures, shrinkTextures } from './memory';
 import type { CoverJob, MapJob, Raster } from './mapworker';
 import { LOW } from './quality';
 import { NavGrid, TerrainField, parseProps, parseTrees, type Tree } from './tiles';
-import { crownMaterial, photoRoofs, terrainMaterial, trunkMaterial,
+import { bridgeMaterial, crownMaterial, photoRoofs, terrainMaterial, trunkMaterial,
          type GroundKind, type GroundTextures, type OrthoTile } from './materials';
 
 const TERRAIN_CHUNK = 100;          // metres per terrain mesh; one orthophoto each
@@ -52,6 +53,7 @@ export interface TileManifest {
   bridges?: { file: string; count: number };
   /** Flat water surfaces (pipeline/water.py); absent where there is none. */
   water?: { file: string };
+  shorelines?: { file: string };
 }
 
 /** Ground textures shared by every tile; each adds its own cover mask. */
@@ -84,6 +86,9 @@ export class Tile {
   terrain: TerrainField | null = null;
   /** Bridge decks, from the coarse level on: seen from afar, stood on close up. */
   decks: Decks | null = null;
+  shorelines: Shorelines | null = null;
+  /** The water's cells and levels, from the coarse level on: what a boat floats on. */
+  water: WaterField | null = null;
   nav: NavGrid | null = null;
   /** 1 px = 1 m minimap of a full tile. */
   map: ImageBitmap | null = null;
@@ -102,6 +107,7 @@ export class Tile {
   private small: { ground: GroundTextures; overview: OrthoTile | null } | null = null;
   private fullTextures: THREE.Texture[] = [];
   private deckMesh: THREE.Mesh | null = null;
+  private shoreMesh: THREE.Group | null = null;
   private waterMat: THREE.MeshStandardMaterial | null = null;
   /** Shared facade textures held by this tile's buildings and props. */
   private sharedKeys: string[] = [];
@@ -210,17 +216,19 @@ export class Tile {
       this.manifest = await res.json() as TileManifest;
     }
     const m = this.manifest;
-    const [tbuf, cover, overview, bridges, water] = await Promise.all([
+    const [tbuf, cover, overview, bridges, water, shore] = await Promise.all([
       fetch(this.url(m.terrain.file)).then((r) => r.arrayBuffer()),
       this.blob(m.cover.file).then((png) => this.coverTexture(png, COARSE_COVER, aniso)),
       m.ortho ? this.texture(m.ortho.overview.file, aniso, m.ortho.overview.w * COARSE_PHOTO)
               : Promise.resolve(null),
       m.bridges ? fetch(this.url(m.bridges.file)).then((r) => r.json()) : Promise.resolve(null),
       m.water ? fetch(this.url(m.water.file)).then((r) => r.json()) : Promise.resolve(null),
+      m.shorelines ? fetch(this.url(m.shorelines.file)).then((r) => r.json() as Promise<ShoreData>) : Promise.resolve(null),
     ]);
     if (this.disposed) return;
     this.terrain = new TerrainField(tbuf);
     if (bridges) this.decks = new Decks(bridges);
+    if (shore) this.shorelines = new Shorelines(shore);
     const t = this.terrain;
     const under = this.decks && this.decks.footprint(t.minX, t.minZ, t.nx, t.nz);
     if (under) this.textures.add(under.map);
@@ -239,7 +247,9 @@ export class Tile {
     if (this.disposed) return;
     this.buildCoarse();
     this.setDecks();
+    this.setShores();
     if (water) {
+      this.water = new WaterField(water);
       const mat = waterMaterial();
       this.animated.push(mat.userData as Uniforms);
       const mesh = waterMesh(water, this.bounds[0], this.bounds[1], mat);
@@ -254,13 +264,32 @@ export class Tile {
   private setDecks(): void {
     if (!this.decks) return;
     if (this.deckMesh) {
-      this.deckMesh.geometry.dispose();
       (this.deckMesh.material as THREE.Material).dispose();
-      this.deckMesh.removeFromParent();
+      this.deckMesh.material = bridgeMaterial(this.ground ?? undefined, this.overview ?? undefined);
+      return;
     }
-    this.deckMesh = this.decks.mesh(this.bounds[0], this.bounds[1], this.overview ?? undefined);
+    this.deckMesh = this.decks.mesh(this.bounds[0], this.bounds[1], this.overview ?? undefined, this.ground ?? undefined);
     freeOnUpload(this.deckMesh.geometry);
     this.group.add(this.deckMesh);
+  }
+
+  private setShores(): void {
+    if (!this.shorelines || !this.ground) return;
+    if (this.shoreMesh) {
+      this.shoreMesh.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (!mesh.isMesh || mesh.name !== 'bank tops') return;
+        for (const mat of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) mat.dispose();
+        mesh.material = terrainMaterial(this.ground!, this.overview ?? undefined);
+      });
+      return;
+    }
+    this.shoreMesh = this.shorelines.meshes(this.bounds[0], this.bounds[1], terrainMaterial(this.ground, this.overview ?? undefined));
+    this.group.add(this.shoreMesh);
+  }
+
+  groundHeight(x: number, z: number): number {
+    return this.shorelines?.height(x, z) ?? this.terrain?.height(x, z) ?? 0;
   }
 
   /**
@@ -311,6 +340,7 @@ export class Tile {
     if (!live()) { map.close(); return this.unloadFull(); }
     this.map = map;
     this.setDecks();
+    this.setShores();
     this.buildings = m.buildings?.count ?? 0;
     this.poiFile = m.pois ? this.url(m.pois) : null;
     if (this.coarse) this.coarse.visible = false;
@@ -322,7 +352,7 @@ export class Tile {
   dropFull(): void {
     if (this.level !== 'full') return;
     this.unloadFull();
-    if (!this.disposed) this.setDecks();
+    if (!this.disposed) { this.setDecks(); this.setShores(); }
   }
 
   /** Whatever full detail has built so far, gone again; the coarse level's
@@ -396,7 +426,7 @@ export class Tile {
       for (let cx = 0; cx < t.nx - 1; cx += TERRAIN_CHUNK) {
         const geo = this.terrainGeometry(cx, cz, n, n, 1, index);
         // the shared index stays: every chunk's upload needs it
-        freeOnUpload(geo, true);
+        freeOnUpload(geo, geo.index === index);
         const mesh = new THREE.Mesh(geo, this.terrainMat(this.overview));
         mesh.receiveShadow = true;
         mesh.name = 'terrain';
@@ -443,7 +473,17 @@ export class Tile {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
-    geo.setIndex(index);
+    if (this.shorelines) {
+      const kept: number[] = [];
+      for (let j = 0; j + 1 < nz; j++) {
+        for (let i = 0; i + 1 < nx; i++) {
+          if (this.shorelines.replaces(c0 + i * step, r0 + j * step)) continue;
+          const first = (j * (nx - 1) + i) * 6;
+          for (let k = 0; k < 6; k++) kept.push(index.getX(first + k));
+        }
+      }
+      geo.setIndex(kept);
+    } else geo.setIndex(index);
     geo.computeBoundingSphere();
     return geo;
   }
@@ -469,6 +509,23 @@ export class Tile {
       } else if (d > PHOTO_FAR && c.photo) {
         this.releasePhoto(c);
         this.setChunkMaterial(c, this.terrainMat(this.overview));
+      }
+    }
+    // Reuse the already-streamed 20 cm Berlin orthophoto under the player on
+    // bridge tops, too. No extra image downloads or GPU texture allocation.
+    const uniforms = (this.deckMesh?.material as THREE.Material | undefined)?.userData.uniforms;
+    if (uniforms?.uBridgeDetailOn) {
+      const detail = this.chunks.find((c) => c.photo && x >= c.photo.min.x && z >= c.photo.min.y
+        && x < c.photo.min.x + c.photo.size && z < c.photo.min.y + c.photo.size)?.photo;
+      uniforms.uBridgeDetailOn.value = detail ? 1 : 0;
+      if (detail) {
+        uniforms.uBridgeDetail.value = detail.map;
+        uniforms.uBridgeDetailMin.value.copy(detail.min);
+        uniforms.uBridgeDetailSize.value = detail.size;
+      } else {
+        // Even an unsampled uniform is bound by WebGL. Never leave it pointing
+        // at a released photo whose ImageBitmap was closed after upload.
+        uniforms.uBridgeDetail.value = this.overview?.map ?? null;
       }
     }
   }

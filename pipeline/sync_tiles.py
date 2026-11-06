@@ -2,8 +2,8 @@
 """Upload the Berlin tiles (data/berlin/) to S3-compatible object storage.
 
 Any S3 API works: MinIO (e.g. the Datahub Berlin), Hetzner, STACKIT, IONOS,
-Cloudflare R2, AWS. The upload goes through the AWS CLI (`brew install
-awscli`); credentials come from its own configuration, never from here:
+Cloudflare R2, AWS. Custom endpoints use the MinIO Python SDK; AWS itself
+uses the AWS CLI. Both read the existing credentials profile:
 
     aws configure --profile tiles            # access key and secret, once
 
@@ -25,10 +25,13 @@ Then build the game against it:
     VITE_TILE_BASE=https://s3.example.berlin/gta-berlin/ npm run build
 """
 import argparse
+import hashlib
 import os
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlsplit
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -92,6 +95,106 @@ def unknown_types():
     return sorted(seen)
 
 
+def same_content(path, remote):
+    """Fast size/time check, then ETag checks for copied files with new mtimes."""
+    if remote is None:
+        return False
+    st = os.stat(path)
+    if st.st_size != remote.size:
+        return False
+    if remote.last_modified and st.st_mtime <= remote.last_modified.timestamp():
+        return True
+    etag = (remote.etag or "").strip('"')
+    if "-" not in etag:
+        digest = hashlib.md5()
+        with open(path, "rb") as fh:
+            while data := fh.read(1024 * 1024):
+                digest.update(data)
+        return digest.hexdigest() == etag
+    # The existing uploads used the CLI's 8 MiB multipart chunks; the SDK
+    # defaults to 5 MiB. Check either without retransmitting unchanged GLBs.
+    try:
+        count = int(etag.rsplit("-", 1)[1])
+    except ValueError:
+        return False
+    for chunk in (8 * 1024 * 1024, 5 * 1024 * 1024):
+        if (st.st_size + chunk - 1) // chunk != count:
+            continue
+        parts = []
+        with open(path, "rb") as fh:
+            while data := fh.read(chunk):
+                parts.append(hashlib.md5(data).digest())
+        if hashlib.md5(b"".join(parts)).hexdigest() + "-%d" % len(parts) == etag:
+            return True
+    return False
+
+
+def sync_endpoint(args, dest, client=None):
+    """S3-compatible endpoints through the MinIO SDK and the existing profile.
+    Assets first, tile manifests next, the world index only after all succeed.
+    """
+    if client is None:
+        from minio import Minio
+        from minio.credentials import AWSConfigProvider
+        endpoint = urlsplit(args.endpoint)
+        if endpoint.scheme not in ("http", "https") or endpoint.path not in ("", "/"):
+            raise ValueError("endpoint must be an http(s) service URL without a path")
+        client = Minio(endpoint=endpoint.netloc, secure=endpoint.scheme == "https",
+                       credentials=AWSConfigProvider(profile=args.profile or "default"))
+    target = urlsplit(dest)
+    bucket = target.netloc
+    prefix = target.path.strip("/")
+    prefix = prefix + "/" if prefix else ""
+    pending, manifests, managed, remote = [], [], set(), {}
+    for sub, cache in GROUPS:
+        for obj in client.list_objects(bucket, prefix=prefix + sub + "/", recursive=True):
+            remote[obj.object_name] = obj
+        for folder, _dirs, files in os.walk(os.path.join(OUT, sub)):
+            for name in files:
+                ext = os.path.splitext(name)[1]
+                if ext not in TYPES or name.endswith(".part"):
+                    continue
+                path = os.path.join(folder, name)
+                key = prefix + os.path.relpath(path, OUT).replace(os.sep, "/")
+                managed.add(key)
+                if same_content(path, remote.get(key)):
+                    continue
+                item = (path, key, TYPES[ext], cache)
+                (manifests if name == "tile.json" else pending).append(item)
+    size = sum(os.path.getsize(p) for p, *_ in pending + manifests)
+    log("%d assets and %d tile manifests to upload (%.2f GiB)" % (len(pending), len(manifests), size / 1024 ** 3))
+    if args.dry_run:
+        log("Dry run: world.json would be published last")
+        return
+
+    def put(item):
+        path, key, content_type, cache = item
+        client.fput_object(bucket, key, path, content_type=content_type,
+                           metadata={"Cache-Control": cache}, num_parallel_uploads=2)
+
+    for label, items in (("assets", pending), ("tile manifests", manifests)):
+        failures = []
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            jobs = {pool.submit(put, item): item[1] for item in items}
+            for count, future in enumerate(as_completed(jobs), 1):
+                try:
+                    future.result()
+                except Exception as error:
+                    failures.append((jobs[future], str(error)))
+                if count % 200 == 0 or count == len(items):
+                    log("  %d/%d %s uploaded" % (count, len(items), label))
+        if failures:
+            raise RuntimeError("upload failed for %d files; world index not published: %s" % (len(failures), failures[:3]))
+    if args.delete:
+        from minio.deleteobjects import DeleteObject
+        errors = list(client.remove_objects(bucket, [DeleteObject(key) for key in remote
+                      if key not in managed and os.path.splitext(key)[1] in TYPES and not key.endswith('.part')]))
+        if errors:
+            raise RuntimeError("remote deletion failed; world index not published: %s" % errors[:3])
+    put((os.path.join(OUT, "world.json"), prefix + "world.json", "application/json", "no-cache"))
+    log("world.json published")
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -113,7 +216,13 @@ def main():
         log("Warning: not uploaded, no content type known for: %s" % ", ".join(odd))
 
     # versions for every finished tile, also if world.json predates them
-    log("world.json: %d tiles" % build_berlin.reindex())
+    if not args.dry_run:
+        log("world.json: %d tiles" % build_berlin.reindex())
+
+    if args.endpoint:
+        sync_endpoint(args, dest)
+        log("Done. Tiles available at %s/%s/" % (args.endpoint.rstrip("/"), dest[len("s3://"):]))
+        return 0
 
     for sub, cache in GROUPS:
         for ext, ctype in TYPES.items():

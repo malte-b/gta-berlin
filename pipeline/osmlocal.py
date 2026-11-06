@@ -33,7 +33,7 @@ NATURAL = {"water"} | GREEN_NATURAL
 POI_NODE_KEYS = ("amenity", "shop", "tourism", "historic", "railway", "leisure")
 WAY_KEYS = {"building", "building:part", "highway", "natural", "waterway", "landuse",
             "leisure", "amenity", "area:highway", "tourism", "railway", "man_made"}
-NODE_KEYS = set(POI_NODE_KEYS) | {"highway"}
+NODE_KEYS = set(POI_NODE_KEYS) | {"highway", "waterway"}
 
 
 def log(m):

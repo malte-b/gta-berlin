@@ -38,9 +38,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import als                                                       # noqa: E402
 import build_pois                                                # noqa: E402
 import build_world as bw                                         # noqa: E402
+import hydrography                                               # noqa: E402
 import landings                                                  # noqa: E402
 import osmlocal                                                  # noqa: E402
 import street_furniture                                          # noqa: E402
+import stitch_water                                              # noqa: E402
 from geo import ORIGIN_E, ORIGIN_H, ORIGIN_N, utm33, utm33_inv   # noqa: E402
 
 ROOT = bw.ROOT
@@ -151,6 +153,7 @@ def build_tile(key, args):
             manifest, _nav = bw.build(area, out, args, margin=MARGIN)
             # bridge ends carried on to ground the game lets you off onto
             print("  %d deck ends carried on to their landings" % landings.land_tile(out, manifest))
+            print("  %d props placed on the rebuilt surfaces" % landings.rebase_props(out, manifest))
             pois = build_pois.build(
                 manifest["origin"], manifest["world"],
                 os.path.join(bw.CACHE, "pois", "pois_%s.json" % key), args.refresh, margin=0)
@@ -176,13 +179,16 @@ def rewater(key, area, out, args):
     patch, _ = bw.build(area, out, args, margin=MARGIN)
     manifest["terrain"] = patch["terrain"]
     manifest["cover"] = patch["cover"]
+    manifest["nav"] = patch["nav"]
+    manifest["trees"] = patch["trees"]
     manifest["world"][1] = round(patch["terrain"]["hmin"], 1)
-    for k in ("bridges", "water"):
+    for k in ("bridges", "water", "shorelines"):
         if patch[k]:
             manifest[k] = patch[k]
         else:
             manifest.pop(k, None)
     print("  %d deck ends carried on to their landings" % landings.land_tile(out, manifest))
+    print("  %d props placed on the rebuilt surfaces" % landings.rebase_props(out, manifest))
     with open(tj + ".part", "w") as mf:
         json.dump(manifest, mf, indent=1)
     os.replace(tj + ".part", tj)
@@ -200,7 +206,7 @@ def write_index(env, ground_tex, spawn):
         # tile.json is written last, so its time changes with every rebuild;
         # the game appends it to the tile's URLs, which outdates cached copies
         tiles[key] = {"dir": "tiles/%s/" % key, "world": m["world"],
-                      "v": format(int(os.stat(path).st_mtime), "x")}
+                       "v": format(os.stat(path).st_mtime_ns, "x")}
     if not tiles:
         return 0
     ws = [t["world"] for t in tiles.values()]
@@ -256,8 +262,8 @@ def main():
     ap.add_argument("--rebuild", action="store_true", help="rebuild finished tiles too")
     ap.add_argument("--osm-refresh", action="store_true",
                     help="fetch today's OSM extract and rebuild the tiles whose OSM data changed")
-    ap.add_argument("--water-only", action="store_true",
-                    help="redo only terrain and water of finished tiles (implies --rebuild)")
+    ap.add_argument("--surfaces-only", "--water-only", dest="water_only", action="store_true",
+                    help="rebuild terrain, bridges, shores, water, navigation and object heights (implies --rebuild)")
     ap.add_argument("--index", action="store_true",
                     help="only rewrite world.json from the tiles already built")
     bw.add_args(ap)
@@ -311,6 +317,8 @@ def main():
         % (len(keys), len(todo), args.workers, os.path.relpath(OUT, ROOT)))
 
     os.makedirs(OUT, exist_ok=True)
+    # one level per river reach, fitted city-wide before the tiles split it up
+    hydrography.prepare(bw.CACHE, args.refresh)
     _java, _jar, ground_tex, env = bw.shared_assets(args, OUT)
     write_index(env, ground_tex, spawn)
 
@@ -336,6 +344,8 @@ def main():
                 rate = (time.time() - t_all) / (done + failed)
                 log("  %-9s %4.0fs   %d/%d built, %d in world, ~%.1f h to go"
                     % (key, secs, done, len(todo), n_tiles, left * rate / 3600))
+    if done:
+        log("  water seams welded in %d tiles" % stitch_water.stitch(OUT))
     log("Done in %.1f h: %d built, %d failed" % ((time.time() - t_all) / 3600, done, failed))
     return 1 if failed else 0
 

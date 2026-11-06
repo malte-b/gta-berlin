@@ -1,4 +1,4 @@
-import { createReadStream, statSync } from 'node:fs';
+import { createReadStream, existsSync, statSync } from 'node:fs';
 import { extname, join, normalize, sep } from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
 
@@ -6,7 +6,8 @@ import { defineConfig, type Plugin } from 'vite';
 // which every build would copy into dist/. It stays in data/berlin/ at the
 // repository root and the dev server serves it from there.
 // BERLIN_DIR=berlin_bridges npm run dev  serves another build of it instead
-const BERLIN = join(__dirname, 'data', process.env.BERLIN_DIR || 'berlin');
+const preferred = existsSync(join(__dirname, 'data/berlin_refined/world.json')) ? 'berlin_refined' : 'berlin';
+const BERLIN = join(__dirname, 'data', process.env.BERLIN_DIR || preferred);
 const TYPES: Record<string, string> = {
   '.json': 'application/json', '.jpg': 'image/jpeg', '.png': 'image/png',
   '.glb': 'model/gltf-binary', '.bin': 'application/octet-stream', '.hdr': 'image/vnd.radiance',
@@ -32,6 +33,7 @@ function berlinTiles(): Plugin {
         }
         res.setHeader('Content-Type', TYPES[extname(file)] ?? 'application/octet-stream');
         res.setHeader('Content-Length', size);
+        if (file.endsWith('/world.json') || file.endsWith('/tile.json')) res.setHeader('Cache-Control', 'no-cache');
         createReadStream(file).pipe(res);
       });
     },

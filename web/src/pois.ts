@@ -36,7 +36,7 @@ const CATEGORY_STYLE: Record<Category, { colour: string; dot: number; label: str
 
 const POI_RADIUS = 130;
 const STREET_RADIUS = 170;
-const MAX_POI_SPRITES = 70;
+const MAX_POI_SPRITES = 35;
 // Data layers are looked for rather than stumbled upon: they reach further,
 // and stand taller, than the OSM places.
 const DATA_RADIUS = 320;
@@ -237,7 +237,7 @@ export class PoiLayer {
       transparent: true, sizeAttenuation: true,
     }));
     spr.renderOrder = 20;
-    const scale = 0.028;
+    const scale = 0.019;
     spr.scale.set(entry.w * scale, entry.h * scale, 1);
     spr.position.y = 2.5;
     g.add(spr);
@@ -410,8 +410,17 @@ export class PoiLayer {
   }
 
   private clearPois(): void {
-    for (const [, obj] of this.mounted) this.group.remove(obj);
+    for (const [, obj] of this.mounted) this.disposePoi(obj);
     this.mounted.clear();
+  }
+
+  private disposePoi(obj: THREE.Object3D): void {
+    obj.removeFromParent();
+    obj.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      mesh.geometry?.dispose();
+      if (mesh.material) for (const mat of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) mat.dispose();
+    });
   }
 
   /** Mount what is near, unmount what is not. Called every frame; cheap. */
@@ -429,7 +438,17 @@ export class PoiLayer {
         if (d < POI_RADIUS * POI_RADIUS) near.push([d, p]);
       }
       near.sort((a, b) => a[0] - b[0]);
-      const keep = near.slice(0, MAX_POI_SPRITES);
+      const keep: [number, Poi][] = [];
+      for (const candidate of near) {
+        const p = candidate[1];
+        // Station entrances and split bridge ways often carry the same OSM
+        // name many times. Show one label for a nearby named place, across
+        // tile boundaries as well; keep separate far-apart branches of chains.
+        if (keep.some(([, q]) => q.c === p.c && q.n === p.n && Math.hypot(q.x - p.x, q.z - p.z) < 90)) continue;
+        if (keep.some(([, q]) => Math.hypot(q.x - p.x, q.z - p.z) < 9)) continue;
+        keep.push(candidate);
+        if (keep.length >= MAX_POI_SPRITES) break;
+      }
       const wanted = new Set<string>();
       for (const [, p] of keep) {
         const key = `${p.x},${p.z},${p.n}`;
@@ -442,7 +461,7 @@ export class PoiLayer {
       }
       for (const [key, obj] of [...this.mounted]) {
         if (!wanted.has(key)) {
-          this.group.remove(obj);
+          this.disposePoi(obj);
           this.mounted.delete(key);
         }
       }

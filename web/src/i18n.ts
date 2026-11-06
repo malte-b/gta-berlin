@@ -27,7 +27,7 @@ const de = {
   'keys.help': '<kbd>W A S D</kbd> bewegen · <kbd>Q</kbd> <kbd>E</kbd> drehen · <kbd>R</kbd> <kbd>F</kbd> neigen<br>'
     + '<kbd>Shift</kbd> rennen · <kbd>Leertaste</kbd> springen<br>'
     + 'nach oben schauen und vorwärts laufen zum Fliegen · in den Boden fliegen zum Landen<br>'
-    + '<kbd>1</kbd> zu Fuß · <kbd>2</kbd> Rad · <kbd>3</kbd> Scooter · <kbd>4</kbd> Auto<br>'
+    + '<kbd>1</kbd> zu Fuß · <kbd>2</kbd> Rad · <kbd>3</kbd> Scooter · <kbd>4</kbd> Auto · <kbd>5</kbd> Boot<br>'
     + '<kbd>H</kbd> fliegen · <kbd>C</kbd> Kamera · <kbd>N</kbd> Nacht · <kbd>T</kbd> Beschriftung<br>'
     + '<kbd>G</kbd> Schatten · <kbd>M</kbd> Kartenzoom · <kbd>X</kbd> zum Start<br>'
     + '<kbd>L</kbd> Datenebenen · <kbd>/</kbd> Suche · <kbd>Esc</kbd> Maus freigeben<br>'
@@ -65,12 +65,14 @@ const de = {
   'hud.buildings': 'Gebäude', 'hud.trees': 'Bäume', 'hud.tiles': 'Kacheln',
   'hud.zoom': 'M — {n} M',
   'move.foot': 'zu Fuß', 'move.bike': 'auf dem Rad', 'move.scooter': 'auf dem E-Scooter',
-  'move.car': 'am Steuer', 'move.flying': 'im Flug', 'move.sleigh': 'in Santas Schlitten',
+  'move.car': 'am Steuer', 'move.boat': 'im Motorboot', 'move.flying': 'im Flug', 'move.sleigh': 'in Santas Schlitten',
 
   'hint.foot': 'zu Fuß',
   'hint.bike': 'auf dem Rad – Shift tritt kräftiger',
   'hint.scooter': 'auf dem E-Scooter',
   'hint.car': 'im Auto – W/S Gas, A/D lenken',
+  'hint.boat': 'im Motorboot – W/S Gas, A/D Ruder, nur auf dem Wasser',
+  'hint.noWater': 'kein Wasser in der Nähe – das Boot braucht Spree, Kanal oder See',
   'hint.cam0': 'Verfolgerkamera', 'hint.cam1': 'nah dran', 'hint.cam2': 'Ego-Perspektive',
   'hint.night': 'Nacht', 'hint.day': 'Tag',
   'hint.flyOn': 'Flug – Shift für Boost, Leertaste/Strg hoch und runter',
@@ -195,7 +197,7 @@ const de = {
 
   'mode.toilets.title': 'Klo-Notstand',
   'mode.toilets.blurb': 'Finde {goal} öffentliche Toiletten in {dur}. Deine Blase wartet nicht: Ist sie voll, kannst du nur noch watscheln.',
-  'mode.toilets.controls': '1 2 3 4 zu Fuß, Rad, Scooter, Auto – alles erlaubt',
+  'mode.toilets.controls': '1 2 3 4 5 zu Fuß, Rad, Scooter, Auto, Boot – alles erlaubt',
   'mode.toilets.source': 'Öffentliche Toiletten Berlin',
   'mode.toilets.score': '<b>{n}</b> / {goal} Toiletten',
   'mode.toilets.full': '😬 Blase voll – nur noch Watscheln!',
@@ -235,7 +237,7 @@ const en: Record<Key, string> = {
   'keys.help': '<kbd>W A S D</kbd> move · <kbd>Q</kbd> <kbd>E</kbd> turn · <kbd>R</kbd> <kbd>F</kbd> tilt<br>'
     + '<kbd>Shift</kbd> sprint · <kbd>Space</kbd> jump<br>'
     + 'look up and walk forward to fly · fly into the ground to land<br>'
-    + '<kbd>1</kbd> foot · <kbd>2</kbd> bike · <kbd>3</kbd> scooter · <kbd>4</kbd> car<br>'
+    + '<kbd>1</kbd> foot · <kbd>2</kbd> bike · <kbd>3</kbd> scooter · <kbd>4</kbd> car · <kbd>5</kbd> boat<br>'
     + '<kbd>H</kbd> fly · <kbd>C</kbd> camera · <kbd>N</kbd> night · <kbd>T</kbd> labels<br>'
     + '<kbd>G</kbd> shadows · <kbd>M</kbd> map zoom · <kbd>X</kbd> respawn<br>'
     + '<kbd>L</kbd> data layers · <kbd>/</kbd> search · <kbd>Esc</kbd> release mouse<br>'
@@ -273,12 +275,14 @@ const en: Record<Key, string> = {
   'hud.buildings': 'buildings', 'hud.trees': 'trees', 'hud.tiles': 'tiles',
   'hud.zoom': 'M — {n} M',
   'move.foot': 'on foot', 'move.bike': 'on a bike', 'move.scooter': 'on an e-scooter',
-  'move.car': 'driving', 'move.flying': 'flying', 'move.sleigh': "in Santa's sleigh",
+  'move.car': 'driving', 'move.boat': 'by motorboat', 'move.flying': 'flying', 'move.sleigh': "in Santa's sleigh",
 
   'hint.foot': 'on foot',
   'hint.bike': 'on a bike — Shift to push harder',
   'hint.scooter': 'on an e-scooter',
   'hint.car': 'in the car — W/S throttle, A/D steer',
+  'hint.boat': 'in the motorboat — W/S throttle, A/D rudder, water only',
+  'hint.noWater': 'no water nearby — the boat needs the Spree, a canal or a lake',
   'hint.cam0': 'third person', 'hint.cam1': 'close', 'hint.cam2': 'first person',
   'hint.night': 'night', 'hint.day': 'day',
   'hint.flyOn': 'flying — Shift to boost, Space/Ctrl up-down',
@@ -403,7 +407,7 @@ const en: Record<Key, string> = {
 
   'mode.toilets.title': 'Toilet Emergency',
   'mode.toilets.blurb': "Find {goal} public toilets in {dur}. Your bladder doesn't wait: when it's full, you can only waddle.",
-  'mode.toilets.controls': '1 2 3 4 foot, bike, scooter, car — anything goes',
+  'mode.toilets.controls': '1 2 3 4 5 foot, bike, scooter, car, boat — anything goes',
   'mode.toilets.source': 'Öffentliche Toiletten Berlin',
   'mode.toilets.score': '<b>{n}</b> / {goal} toilets',
   'mode.toilets.full': '😬 Bladder full — you can only waddle!',
