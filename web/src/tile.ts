@@ -489,13 +489,32 @@ export class Tile {
   }
 
   /** Swap 20 cm orthophotos in near (x, z) and back out further away. */
+  /** Orthophoto chunks close enough to (x, z) for their full photo: how
+   *  many there are, and how many have it already. */
+  photoCount(x: number, z: number): [number, number] {
+    const o = this.manifest?.ortho;
+    if (!o || this.level !== 'full') return [0, 0];
+    let want = 0, have = 0;
+    for (const c of this.chunks) {
+      if (c.i >= o.nx || c.j >= o.nz || this.photoDistance(c, x, z) >= PHOTO_NEAR) continue;
+      want++;
+      if (c.photo) have++;
+    }
+    return [want, have];
+  }
+
+  private photoDistance(c: Tile['chunks'][number], x: number, z: number): number {
+    const o = this.manifest!.ortho!;
+    const cx = o.minX + (c.i + 0.5) * o.chunk;
+    const cz = o.minZ + (c.j + 0.5) * o.chunk;
+    return Math.hypot(cx - x, cz - z) - o.chunk * 0.7;
+  }
+
   updatePhotos(x: number, z: number, aniso: number): void {
     const o = this.manifest?.ortho;
     if (!o || this.level !== 'full') return;
     for (const c of this.chunks) {
-      const cx = o.minX + (c.i + 0.5) * o.chunk;
-      const cz = o.minZ + (c.j + 0.5) * o.chunk;
-      const d = Math.hypot(cx - x, cz - z) - o.chunk * 0.7;
+      const d = this.photoDistance(c, x, z);
       if (d < PHOTO_NEAR && !c.photo && !c.loading && c.i < o.nx && c.j < o.nz) {
         c.loading = true;
         const file = o.tile.replace('{i}', String(c.i)).replace('{j}', String(c.j));
@@ -898,14 +917,14 @@ function leafColour(out: THREE.Color, t: Tree, rnd: number): void {
   out.setRGB(base[0] * j, base[1] * j, base[2] * (0.9 + rnd * 0.2), THREE.SRGBColorSpace);
 }
 
-const TRUNK_GEO = once(() => new THREE.CylinderGeometry(0.36, 0.5, 1, 7, 1).translate(0, 0.5, 0));
+export const TRUNK_GEO = once(() => new THREE.CylinderGeometry(0.36, 0.5, 1, 7, 1).translate(0, 0.5, 0));
 
 /**
  * A unit crown (radius 1, centred) built from a cluster of displaced spheres,
  * so the silhouette is lumpy rather than a ball. Vertex colours carry a baked
  * occlusion term: darker underneath and toward the core.
  */
-const CROWN_GEO = once((): THREE.BufferGeometry => {
+export const CROWN_GEO = once((): THREE.BufferGeometry => {
   const parts: THREE.BufferGeometry[] = [];
   const blobs: [number, number, number, number][] = [
     [0, 0.1, 0, 0.78], [0.42, -0.1, 0.12, 0.55], [-0.38, -0.05, -0.2, 0.58],

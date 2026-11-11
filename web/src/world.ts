@@ -231,6 +231,27 @@ export class World {
     }
   }
 
+  /**
+   * How much of what should show around (x, z) is in: each tile in range at
+   * the detail its distance asks for, and each close orthophoto. Done when
+   * done reaches total; the total grows as tiles come in full and bring
+   * their photo chunks.
+   */
+  progress(x: number, z: number): { done: number; total: number } {
+    let done = 0, total = 0;
+    for (const tile of this.tiles.values()) {
+      const d = this.tiled ? tile.distance(x, z) : 0;
+      const level = d <= FULL_IN ? 'full' : d <= COARSE_IN ? 'coarse' : null;
+      if (!level) continue;
+      total++;
+      if (tile.level === 'full' || (level === 'coarse' && tile.level === 'coarse')) done++;
+      const [want, have] = tile.photoCount(x, z);
+      total += want;
+      done += have;
+    }
+    return { done, total };
+  }
+
   private async raise(tile: Tile, level: 'coarse' | 'full'): Promise<void> {
     if (tile.level === 'none') {
       await tile.loadCoarse(this.shared, this.aniso);
@@ -409,6 +430,11 @@ export class World {
    * first, and only one whose region reaches OPEN_REACH metres away - or runs
    * off the loaded tiles, where we cannot tell - is taken. Enclosed regions
    * are ruled out whole and the search moves on outward.
+   *
+   * The way out has to be roomy (see roomy): a yard whose only exit is a gap
+   * of a metre or two counts as walled in. Such a gap is usually a gateway
+   * under the front building - open in the grid, drawn as a solid wall, and
+   * too narrow to find or walk through.
    */
   freeSpot(x: number, z: number, maxR = 120, driving = false): XZ {
     const first = this.nav.nearestPassable(x, z, driving, maxR);
@@ -419,7 +445,7 @@ export class World {
     const seen = new Uint8Array(side * side);
     const cx = Math.floor(x) + 0.5, cz = Math.floor(z) + 0.5;
     const at = (i: number, j: number) => (j + W) * side + (i + W);
-    let start = this.nav.passable(cx, cz, driving) ? [0, 0] as [number, number]
+    let start = this.roomy(cx, cz, driving) ? [0, 0] as [number, number]
       : this.nextCandidate(cx, cz, maxR, W, side, seen, driving, at);
     for (let tries = 0; start && tries < 8; tries++) {
       if (this.leadsOut(start, cx, cz, W, side, seen, driving)) {
@@ -448,7 +474,7 @@ export class World {
         if (seen[k]) continue;
         const px = cx + ni, pz = cz + nj;
         if (!this.nav.contains(px, pz)) return true;
-        if (!this.nav.passable(px, pz, driving)) continue;
+        if (!this.roomy(px, pz, driving)) continue;
         seen[k] = 1;
         queue.push(ni, nj);
       }
@@ -456,7 +482,18 @@ export class World {
     return false;
   }
 
-  /** The nearest passable cell not yet ruled out, spiralling outward. */
+  /** Passable with a cell of room all round: ground three metres across. */
+  private roomy(x: number, z: number, driving: boolean): boolean {
+    const c = this.nav.cell;
+    for (let dz = -c; dz <= c; dz += c) {
+      for (let dx = -c; dx <= c; dx += c) {
+        if (!this.nav.passable(x + dx, z + dz, driving)) return false;
+      }
+    }
+    return true;
+  }
+
+  /** The nearest roomy cell not yet ruled out, spiralling outward. */
   private nextCandidate(cx: number, cz: number, maxR: number, W: number, side: number,
                         seen: Uint8Array, driving: boolean,
                         at: (i: number, j: number) => number): [number, number] | null {
@@ -466,7 +503,7 @@ export class World {
         const th = (a / steps) * Math.PI * 2;
         const i = Math.round(Math.cos(th) * r), j = Math.round(Math.sin(th) * r);
         if (Math.abs(i) > W || Math.abs(j) > W || seen[at(i, j)]) continue;
-        if (this.nav.passable(cx + i, cz + j, driving)) return [i, j];
+        if (this.roomy(cx + i, cz + j, driving)) return [i, j];
       }
     }
     return null;

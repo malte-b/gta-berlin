@@ -1,4 +1,4 @@
-import { MEDALS, MODE_INFO, dailySeed, modeText, randomSeed, type Result } from './games';
+import { MEDALS, MODE_INFO, dailySeed, modeText, type Result } from './games';
 import { num, onLang, t } from './i18n';
 import { playerName, setPlayerName, standing, type Board } from './ranking';
 import { Scoreboard } from './scoreboard';
@@ -9,9 +9,9 @@ import { bestScore, type Run } from './scores';
  *
  * A game is played on a course - a seed that picks a fair start - so that
  * scores mean something: clicking a mode plays today's course, the same for
- * everyone today; 🎲 rolls a new one; 📍 plays right where you stand, which
- * is unranked because nobody else can start there. A course travels as a
- * link, #play=<mode>:<seed>, to challenge someone on it.
+ * everyone today. That is the only choice offered - one course a day is
+ * easy to understand and to compare. A course also travels as a link,
+ * #play=<mode>:<seed>, to challenge someone on it.
  */
 
 export type Choice = { id: 'free' } | { id: string; seed: number | null };
@@ -134,7 +134,6 @@ export class Menu {
     );
     const btns: [string, () => void, boolean?][] = [
       [t('menu.again'), () => this.pick({ id, seed })],
-      [t('menu.newCourse'), () => this.pick({ id, seed: randomSeed() }), true],
       [t('menu.freeRoam'), () => this.pick({ id: 'free' }), true],
     ];
     if (seed !== null) {
@@ -222,21 +221,6 @@ export class Menu {
                              best === null ? t('menu.notPlayed')
                                : t('menu.todayBest', { n: num(best, 0) }),
                              () => this.pick({ id: m.id, seed: today }));
-      const extra = h('div', 'rb');
-      extra.style.justifyContent = 'flex-start';
-      extra.style.marginTop = '4px';
-      for (const [label, seed] of [['random', -1], ['here', null]] as const) {
-        const b = h('button', 'alt', t(`menu.${label}`));
-        b.title = t(`menu.${label}Title`);
-        b.style.padding = '4px 9px';
-        b.style.fontSize = '10.5px';
-        b.addEventListener('click', (e) => {
-          e.stopPropagation();
-          this.pick({ id: m.id, seed: seed === null ? null : randomSeed() });
-        });
-        extra.append(b);
-      }
-      card.append(extra);
       cards.push(card);
     }
     this.modes.replaceChildren(...cards);

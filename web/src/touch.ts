@@ -27,7 +27,9 @@ const KNOB_SPRINT = 'rgba(255,214,64,1)';
 const LOOK = 2.4;
 
 export interface TouchButton {
-  label: string;
+  /** Fixed, or worked out again a few times a second (the vehicle button
+   *  shows the vehicle it switches to). */
+  label: string | (() => string);
   code: string | (() => string);
   /** Whether it does anything right now; hidden when not. */
   show?: () => boolean;
@@ -40,7 +42,7 @@ export class TouchControls {
   /**
    * look(dx, dy) turns the view by pixel deltas, the way the mouse does;
    * buttons are pressed as key codes, or as a function returning one (the
-   * vehicle button cycles).
+   * vehicle button cycles, and shows what it cycles to).
    */
   constructor(private readonly look: (dx: number, dy: number) => void, buttons: TouchButton[],
               private readonly onStick: (push: number | null) => void = () => {}) {
@@ -50,8 +52,9 @@ export class TouchControls {
     const bar = document.getElementById('touchButtons')!;
     for (const b of buttons) {
       const el = document.createElement('button');
-      el.textContent = b.label;
+      el.textContent = typeof b.label === 'function' ? b.label() : b.label;
       if (b.show) this.toggles.push([el, b.show]);
+      if (typeof b.label === 'function') this.labels.push([el, b.label]);
       el.addEventListener('pointerdown', (e) => {
         e.preventDefault();
         const code = typeof b.code === 'function' ? b.code() : b.code;
@@ -67,6 +70,7 @@ export class TouchControls {
   }
 
   private readonly toggles: [HTMLElement, () => boolean][] = [];
+  private readonly labels: [HTMLElement, () => string][] = [];
   private refreshIn = 0;
 
   /** Show only the buttons that do something now; a few times a second. */
@@ -76,6 +80,10 @@ export class TouchControls {
     for (const [el, show] of this.toggles) {
       const display = show() ? '' : 'none';
       if (el.style.display !== display) el.style.display = display;
+    }
+    for (const [el, label] of this.labels) {
+      const text = label();
+      if (el.textContent !== text) el.textContent = text;
     }
   }
 

@@ -10,6 +10,7 @@ import { LayerPanel } from './layerpanel';
 import { skyMaterial } from './materials';
 import { FOG_DAY, FOG_NIGHT, SUN_DIR, installAtmosphere } from './atmosphere';
 import { makeGame, type Game } from './games';
+import { GameLoader } from './loading';
 import { playerName } from './ranking';
 import { bestScore, recordRun } from './scores';
 import { Menu, type Choice } from './menu';
@@ -178,6 +179,8 @@ let night = 0;
 const keys = new Set<string>();
 /** The ways of getting around, on the number keys 1 to 5. */
 const MOVES = ['foot', 'bike', 'scooter', 'car', 'boat'] as const;
+/** On the touch screen's vehicle button. */
+const MOVE_ICONS: Record<typeof MOVES[number], string> = { foot: '🚶', bike: '🚲', scooter: '🛴', car: '🚗', boat: '🚤' };
 let pointerLocked = false;
 
 /* --- game modes ---------------------------------------------------------- */
@@ -186,6 +189,7 @@ let game: Game | null = null;
 let gameSeed: number | null = null;
 let gameChoice: Choice | null = null;
 let starting = false;
+const loader = new GameLoader();
 /** A game on hold: the clock, the rules and the player all wait. */
 let paused = false;
 let pausedAt = 0;
@@ -194,32 +198,51 @@ const menu = new Menu((c) => void choose(c));
 
 async function choose(c: Choice): Promise<void> {
   keys.clear();
-  lockPointer();
   if (c.id === 'free') {
+    lockPointer();
     hud.hint(t('hint.free'), 3.2);
     return;
   }
   if (starting) return;
   starting = true;
+  // the course and its tiles take a moment; the city behind it is free roam
+  // until the game takes over, so it stays covered
+  loader.show(c.id, touchDevice);
   const seed = 'seed' in c ? c.seed : null;
   try {
     const g = makeGame(c.id, { scene, world, player, hud, camera, setNight: (n) => { night = n; } });
-    hud.hint(t('hint.setup'), 8);
+    // Esc on the loading screen: give up after whatever step is under way
+    const backOut = () => {
+      if (!loader.cancelled) return false;
+      g.stop();
+      menu.show();
+      return true;
+    };
     await g.load();
+    if (backOut()) return;
     let ranked = seed;
+    const at = seed !== null ? g.choose(seed) : null;
     if (seed !== null) {
-      const at = g.choose(seed);
       if (at) {
         player.setMode('foot');
         await world.ensure(at[0], at[1]);
+        if (backOut()) return;
         player.spawn(at[0], at[1]);
       } else {
         // the committed single area is too small for a fair start
         ranked = null;
-        hud.hint(t('hint.noFair'), 5);
       }
     }
     g.prepare();
+    await cityAround();
+    // again, now the whole neighbourhood is in: with only the one tile, the
+    // free spot next to it can sit on ground that had no height yet
+    if (at) player.spawn(at[0], at[1]);
+    // the controls stay up until the player says go
+    await loader.ready();
+    if (backOut()) return;
+    // the click or key that said go is the gesture pointer lock needs
+    if (!touchDevice) lockPointer();
     // the score to beat, chased live
     if (ranked !== null) g.best = bestScore(c.id, ranked);
     document.body.classList.add('gaming');
@@ -229,11 +252,28 @@ async function choose(c: Choice): Promise<void> {
     gameChoice = c;
     g.start();
     if (ranked !== null) hud.hint('', 0.01);
+    else if (seed !== null) hud.hint(t('hint.noFair'), 5);
   } catch (err) {
     hud.hint(t('hint.cantStart', { e: (err as Error).message }), 6);
   } finally {
     starting = false;
+    loader.hide();
   }
+}
+
+/** Hold the loading screen until everything around the player has streamed
+ *  in - the tiles at the detail their distance asks for and the close
+ *  photos - or 30 s have passed, should one never arrive. */
+async function cityAround(): Promise<void> {
+  const until = performance.now() + 30_000;
+  for (;;) {
+    const { done, total } = world.progress(player.pos.x, player.pos.z);
+    loader.progress(total ? done / total : 1);
+    if (done >= total || performance.now() > until || loader.cancelled) return;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  // the bar at full for a moment, and a frame drawn with it all in place
+  await new Promise((r) => setTimeout(r, 250));
 }
 
 /** Take the running game down; returns it for the result. */
@@ -309,6 +349,8 @@ addEventListener('keydown', (e) => {
     if (e.code === 'Escape') { (document.activeElement as HTMLElement).blur(); }
     return;
   }
+  // nothing to do while a game loads behind its screen
+  if (starting) return;
   // the search and the layers panel are hidden during a game
   if (game && (e.code === 'Slash' || e.code === 'KeyL')) return;
   if (e.code === 'Slash') {
@@ -458,16 +500,20 @@ addEventListener('mousemove', (e) => {
 const touch = touchDevice ? new TouchControls(look, [
   { label: '⏸', code: 'KeyP' },
   { label: '🎥', code: 'KeyC' },
-  // the next way of getting around this game allows; none when there is no choice
-  { label: '🚲', code: () => {
-    // the boat only where there is water to take it out on
-    const allowed = MOVES.filter((m) => (!game || game.allows(m)) && (m !== 'boat' || player.canBoat()));
-    const next = allowed[(allowed.indexOf(player.mode as typeof MOVES[number]) + 1) % allowed.length];
-    return `Digit${MOVES.indexOf(next) + 1}`;
-  }, show: () => !player.sleigh && MOVES.filter((m) => !game || game.allows(m)).length > 1 },
+  // the next way of getting around this game allows, showing which it is;
+  // none when there is no choice
+  { label: () => MOVE_ICONS[nextMove()], code: () => `Digit${MOVES.indexOf(nextMove()) + 1}`,
+    show: () => !player.sleigh && MOVES.filter((m) => !game || game.allows(m)).length > 1 },
   { label: '⤒', code: 'Space', show: () => !player.sleigh && !player.vehicle },
 ], (push) => { player.stick = push; }) : null;
 let touchShown = true;
+
+/** The way of getting around after this one, among those the game allows -
+ *  the boat only where there is water to take it out on. */
+function nextMove(): typeof MOVES[number] {
+  const allowed = MOVES.filter((m) => (!game || game.allows(m)) && (m !== 'boat' || player.canBoat()));
+  return allowed[(allowed.indexOf(player.mode as typeof MOVES[number]) + 1) % allowed.length];
+}
 
 /**
  * Keep the drawing buffer matched to the window.
@@ -550,7 +596,7 @@ function frame(now: number): void {
   world.update(player.pos.x, player.pos.z);
   const wasFlying = player.flying;
   // the menu pauses play, and nobody moves before the countdown says go
-  const held = menu.open || paused;
+  const held = menu.open || paused || starting;
   if (!held && game?.state !== 'countdown') player.update(dt, keys);
   if (touch && touchShown === held) {
     touchShown = !held;

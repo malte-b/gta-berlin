@@ -290,6 +290,57 @@
     padding: 6px; cursor: pointer; }
   #layeradd:hover, body.dragging #layeradd { color: var(--ui); border-color: var(--accent); }
   #layernote { color: var(--dim); font-size: 9.5px; margin-top: 4px; line-height: 1.4; }
+  /* between picking a game and its countdown (loading.ts): covers the city
+     until the start has streamed in, in the game's own colours */
+  #gameLoading { position: fixed; inset: 0; z-index: 21; display: none; place-items: center;
+    overflow-x: hidden; overflow-y: auto; text-align: center; padding: 16px;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    background: radial-gradient(110% 80% at 50% 8%, var(--gl-glow) 0%, var(--gl-base) 72%); }
+  #gameLoading.on { display: grid; }
+  #glCanvas { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  #gameLoading .card { position: relative; max-width: 480px; }
+  /* where loadingart.ts puts the game's 3D scene */
+  #glArt { height: 250px; margin-bottom: 10px; }
+  #glArt.none { height: 0; margin: 0; }
+  @media (max-height: 860px) { #glArt { height: 180px; } }
+  @media (max-height: 660px) { #glArt { height: 120px; } }
+  #glTitle { margin: 0; font-size: clamp(28px, 6vw, 42px); font-weight: 800; letter-spacing: -.01em;
+    color: #fff; text-shadow: 0 2px 18px rgba(0,0,0,.35); }
+  #glBlurb { margin: 10px auto 20px; max-width: 44ch; font-size: 15px; line-height: 1.5;
+    color: rgba(255,255,255,.74); }
+  #glKeys { display: grid; grid-template-columns: auto 1fr; gap: 7px 12px; align-items: center;
+    max-width: 440px; margin: 0 auto 22px; padding: 14px 18px; text-align: left; font-size: 13.5px;
+    color: rgba(255,255,255,.86); background: rgba(0,0,0,.24); border: 1px solid rgba(255,255,255,.09);
+    border-radius: 14px; }
+  #glKeys .k { justify-self: end; white-space: nowrap; }
+  #glKeys kbd { display: inline-block; min-width: 24px; margin-left: 4px; padding: 3px 7px;
+    border-radius: 6px; border: 1px solid rgba(255,255,255,.2); border-bottom-width: 3px;
+    background: rgba(255,255,255,.1); color: #fff; font: 600 12px system-ui, sans-serif; text-align: center; }
+  #glKeys svg.mouse { width: 17px; height: 25px; margin-left: 4px; vertical-align: middle; color: #fff; }
+  #glKeys .pairs { grid-column: 1 / -1; display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 16px; }
+  #glKeys .pairs kbd, #glKeys .pairs svg.mouse { margin: 0 6px 0 0; }
+  #glKeys .tip { grid-column: 1 / -1; margin-top: 4px; color: var(--gl-accent); font-size: 13px; }
+  #glPlay { display: none; }
+  #gameLoading.ready #glTrack { display: none; }
+  #gameLoading.ready #glPlay { display: inline-block; }
+  #glPlay { padding: 14px 44px; border: 0; border-radius: 999px; cursor: pointer;
+    background: var(--gl-accent); color: #160d04; font: 800 18px system-ui, sans-serif; letter-spacing: .01em;
+    box-shadow: 0 10px 28px rgba(0,0,0,.4); animation: glPop .35s ease-out; transition: transform .12s; }
+  #glPlay:hover, #glPlay:focus-visible { transform: scale(1.05); outline: none; }
+  @keyframes glPop { from { transform: scale(.7); opacity: 0; } }
+  #glBack { display: block; margin: 12px auto 0; padding: 4px 8px; border: 0; background: none; cursor: pointer;
+    color: rgba(255,255,255,.55); font: 13px system-ui, sans-serif; }
+  #glBack:hover { color: #fff; text-decoration: underline; }
+  #glTrack { width: min(320px, 80vw); height: 6px; margin: 0 auto; border-radius: 99px;
+    background: rgba(255,255,255,.12); overflow: hidden; }
+  #glBar { height: 100%; width: 0; border-radius: inherit; background: var(--gl-accent);
+    box-shadow: 0 0 14px var(--gl-accent); transition: width .35s ease-out; }
+  #glLine { margin-top: 12px; min-height: 1.4em; font-size: 13px; color: var(--gl-accent); opacity: 0; }
+  #glLine.in { animation: glIn .4s ease-out forwards; }
+  @keyframes glIn { from { opacity: 0; transform: translateY(4px); } to { opacity: .95; transform: none; } }
+  @media (prefers-reduced-motion: reduce) {
+    #glLine.in { animation: none; opacity: .95; }
+  }
   #pause { position: fixed; inset: 0; z-index: 15; display: none; place-items: center;
     background: rgba(10,12,17,.72); }
   #pause.on { display: grid; }
@@ -359,6 +410,16 @@
   </div>
 </div></div>
 <div id="board"></div>
+<div id="gameLoading"><canvas id="glCanvas"></canvas><div class="card">
+  <div id="glArt"></div>
+  <h3 id="glTitle"></h3>
+  <p id="glBlurb"></p>
+  <div id="glKeys"></div>
+  <div id="glTrack"><div id="glBar"></div></div>
+  <button id="glPlay"></button>
+  <div id="glLine"></div>
+  <button id="glBack"></button>
+</div></div>
 <div id="pause"><div class="inner">
   <h3 data-i18n="pause.title">Pause</h3>
   <p id="pauseInfo"></p>

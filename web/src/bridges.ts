@@ -424,6 +424,9 @@ export class Decks {
     const prism = (ring: [number, number][], y0: number, y1: number, roof = false) => {
       tint = new THREE.Color(0x969184); type = 0; photograph = false;
       let r = ring.map(([x, z]) => new THREE.Vector2(x - ox, z - oz));
+      // some outlines come closed, first point repeated; triangulateShape
+      // drops that point from r itself, and the sides below would run past it
+      if (r.length > 1 && r[0].equals(r[r.length - 1])) r.pop();
       if (r.length < 3) return;
       // wound so that the top faces up: clockwise in x/z seen from above
       if (THREE.ShapeUtils.isClockWise(r)) r = r.reverse();

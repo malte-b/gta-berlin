@@ -1400,7 +1400,9 @@ def write(dks, x0, z0, sx, sz, out, pier_list=(), roofs=()):
         return x0 <= cx < x0 + sx and z0 <= cz < z0 + sz
 
     def pts(ring):
-        return [[round(x, 2), round(z, 2)] for x, z in ring]
+        out = [[round(x, 2), round(z, 2)] for x, z in ring]
+        # outlines are open; one that comes closed would repeat its first point
+        return out[:-1] if len(out) > 1 and out[0] == out[-1] else out
     pout = [{"r": pts(p["r"]), "y0": round(p["y0"] - ORIGIN_H, 2), "y1": round(p["y1"] - ORIGIN_H, 2)}
             for p in pier_list if mine(p["r"])]
     rout = [{"r": pts(r["r"]), "y": round(r["y"] - ORIGIN_H, 2), "t": r["t"]}

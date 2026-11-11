@@ -284,8 +284,8 @@ python3 pipeline/build_games.py      # writes web/public/data/games/ (needs buil
   picks it: one of the mode's anchor points (a toilet, a kebab shop, a pump)
   with enough targets around it, then 250 m off it in a seeded direction.
   Clicking a mode plays today's course (the date is the seed), so everyone
-  playing on the same day gets the same start; 🎲 rolls a new course, and 📍
-  plays where you stand, unranked. `#play=<mode>:<seed>` in the URL offers a
+  playing on the same day gets the same start. That is the only start the
+  menu offers, to keep the choice simple. `#play=<mode>:<seed>` in the URL offers a
   course as a challenge, and the result screen copies that link.
 * **Points, combos and gold.** Each target is worth 100 points. Reaching the
   next one before the combo bar runs out (10–40 s, by mode) multiplies that,

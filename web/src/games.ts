@@ -1060,7 +1060,7 @@ class HeatWave extends Game {
 
 /** Water young trees from street pumps, Gieß den Kiez style. */
 class GiessDenKiez extends Game {
-  override readonly modes: Mode[] = ['foot', 'bike'];
+  override readonly modes: Mode[] = ['foot', 'bike', 'scooter'];
   protected override beaconRange = 600;
   protected override beaconCount = 30;
   protected override beaconHeight = 14;
@@ -1348,6 +1348,3 @@ export function dailySeed(d = new Date()): number {
   return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
 }
 
-export function randomSeed(): number {
-  return 100000000 + Math.floor(Math.random() * 899999999);
-}
