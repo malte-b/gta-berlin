@@ -1,6 +1,8 @@
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { extname, join, normalize, sep } from 'node:path';
-import { defineConfig, type Plugin } from 'vite';
+import { defineConfig, loadEnv, type Plugin } from 'vite';
+import player from './api/player';
+import runs from './api/runs';
 
 // All of Berlin (pipeline/build_berlin.py) is 10-20 GB, too much for public/,
 // which every build would copy into dist/. It stays in data/berlin/ at the
@@ -40,10 +42,28 @@ function berlinTiles(): Plugin {
   };
 }
 
-export default defineConfig({
-  root: 'web',
-  publicDir: 'public',
-  server: { port: 5173 },
-  plugins: [berlinTiles()],
-  build: { outDir: '../dist', emptyOutDir: true, target: 'es2022' },
+// The score API (api/) runs as serverless functions on Vercel; here the dev
+// server answers for them, with HASURA_* from .env at the repository root.
+function scoreApi(): Plugin {
+  return {
+    name: 'score-api',
+    configureServer(server) {
+      server.middlewares.use('/api/runs', (req, res) => void runs(req, res));
+      server.middlewares.use('/api/player', (req, res) => void player(req, res));
+    },
+  };
+}
+
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, __dirname, 'HASURA_');
+  for (const [k, v] of Object.entries(env)) {
+    if (k.startsWith('HASURA_') && v) process.env[k] ??= v;
+  }
+  return {
+    root: 'web',
+    publicDir: 'public',
+    server: { port: 5173 },
+    plugins: [berlinTiles(), scoreApi()],
+    build: { outDir: '../dist', emptyOutDir: true, target: 'es2022' },
+  };
 });

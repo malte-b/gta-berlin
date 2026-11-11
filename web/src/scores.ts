@@ -7,10 +7,10 @@
  * course is kept apart, so it survives the list being trimmed - it is what a
  * course's record and "new best" are measured against.
  *
- * Shaped for a shared board later: a run is plain data with nothing
- * browser-specific in it, so the same record can be POSTed to an API in front
- * of a Postgres table on the Datahub and compared with everyone else's on the
- * same course. See README, "Scores".
+ * A run is plain data with nothing browser-specific in it, so the same record
+ * goes to the shared board once the player has picked a name (ranking.ts).
+ * It carries that name, so friends taking turns on one device each keep
+ * their own. See README, "Scores".
  */
 
 export interface Run {
@@ -23,8 +23,12 @@ export interface Run {
   /** 0 none, 1-3 bronze to gold. */
   medal: number;
   combo: number;
-  /** When it ended, ms since 1970. */
+  /** When it ended, ms since 1970; also what tells runs apart. */
   at: number;
+  /** On the shared board already. */
+  sent?: boolean;
+  /** The nickname it was played under; none before one was picked. */
+  name?: string;
 }
 
 const RUNS = 'berlin.runs';
@@ -70,24 +74,57 @@ export function recordRun(run: Run): boolean {
   return true;
 }
 
+/**
+ * The order on a high score list: more targets first, points between runs
+ * that reached as many. Points alone mix in combos and gold, and say less.
+ */
+export function better(a: Pick<Run, 'count' | 'score'>, b: Pick<Run, 'count' | 'score'>): number {
+  return b.count - a.count || b.score - a.score;
+}
+
+/** Games played before a name was picked are the first name's. */
+export function nameRuns(name: string): void {
+  const list = runs();
+  if (!list.some((r) => !r.name)) return;
+  for (const r of list) r.name ??= name;
+  write(RUNS, list);
+}
+
+/** Note that a run has gone to the shared board. */
+export function markSent(at: number): void {
+  const list = runs();
+  const r = list.find((x) => x.at === at);
+  if (!r || r.sent) return;
+  r.sent = true;
+  write(RUNS, list);
+}
+
+export function isSent(at: number): boolean {
+  return runs().some((r) => r.at === at && r.sent);
+}
+
+/** Runs played under a name, and those from before any name was picked. */
+export function runsOf(name: string | null): Run[] {
+  const key = name?.toLowerCase();
+  return runs().filter((r) => !r.name || r.name.toLowerCase() === key);
+}
+
 export interface ModeStats {
   played: number;
   /** The best run on any course. */
   best: Run | null;
   /** The best run on today's course. */
   today: Run | null;
-  /** How many runs earned each medal, bronze to gold. */
-  medals: [number, number, number];
 }
 
-export function stats(mode: string, todaySeed: number): ModeStats {
-  const s: ModeStats = { played: 0, best: null, today: null, medals: [0, 0, 0] };
-  for (const r of runs()) {
+/** A mode's numbers for a name; see runsOf. */
+export function stats(mode: string, todaySeed: number, name: string | null): ModeStats {
+  const s: ModeStats = { played: 0, best: null, today: null };
+  for (const r of runsOf(name)) {
     if (r.mode !== mode) continue;
     s.played++;
-    if (!s.best || r.score > s.best.score) s.best = r;
-    if (r.seed === todaySeed && (!s.today || r.score > s.today.score)) s.today = r;
-    if (r.medal > 0) s.medals[r.medal - 1]++;
+    if (!s.best || better(r, s.best) < 0) s.best = r;
+    if (r.seed === todaySeed && (!s.today || better(r, s.today) < 0)) s.today = r;
   }
   return s;
 }

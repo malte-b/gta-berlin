@@ -12,7 +12,9 @@
     "bench:games": "node scripts/games-bench.ts",
     "check": "node scripts/check.ts",
     "test:bridges": "node scripts/test-bridges.ts",
-    "check:crossings": "node scripts/crossings.ts"
+    "check:crossings": "node scripts/crossings.ts",
+    "db:schema": "node --env-file-if-exists=.env scripts/db-schema.ts",
+    "db:token": "node --env-file-if-exists=.env scripts/hasura-jwt.ts"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",

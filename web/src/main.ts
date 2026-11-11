@@ -9,6 +9,7 @@ import { PoiLayer } from './pois';
 import { LayerPanel } from './layerpanel';
 import { skyMaterial } from './materials';
 import { makeGame, type Game } from './games';
+import { playerName } from './ranking';
 import { bestScore, recordRun } from './scores';
 import { Menu, type Choice } from './menu';
 import { applyStatic, setLang, t, type Lang } from './i18n';
@@ -256,9 +257,10 @@ function endGame(abandoned: boolean): void {
     return;
   }
   const r = g.result;
-  const best = recordRun({ mode: g.info.id, seed: gameSeed, score: r.score, count: r.count,
-                           medal: r.medal, combo: r.combo, at: Date.now() });
-  menu.showResult(g.info.id, gameSeed, g.result, best);
+  const run = { mode: g.info.id, seed: gameSeed, score: r.score, count: r.count,
+                medal: r.medal, combo: r.combo, at: Date.now(), name: playerName() ?? undefined };
+  const best = recordRun(run);
+  menu.showResult(g.info.id, gameSeed, g.result, best, run);
 }
 
 /* --- pause ---------------------------------------------------------------- */
@@ -298,12 +300,13 @@ document.getElementById('pauseRestart')!.addEventListener('click', () => {
 document.addEventListener('visibilitychange', () => { if (document.hidden) pause(); });
 
 const goInput = document.getElementById('goInput') as HTMLInputElement;
-const typing = () => document.activeElement === goInput;
+// the search box, or a name field in the menu
+const typing = () => document.activeElement instanceof HTMLInputElement && document.activeElement.type === 'text';
 
 addEventListener('keydown', (e) => {
   if (typing()) {
-    // let the search box have the keyboard to itself
-    if (e.code === 'Escape') { goInput.blur(); }
+    // let the text field have the keyboard to itself
+    if (e.code === 'Escape') { (document.activeElement as HTMLElement).blur(); }
     return;
   }
   // the search and the layers panel are hidden during a game

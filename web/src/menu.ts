@@ -1,6 +1,8 @@
 import { MEDALS, MODE_INFO, dailySeed, modeText, randomSeed, type Result } from './games';
-import { lang, num, onLang, t } from './i18n';
-import { bestScore, runs, stats } from './scores';
+import { num, onLang, t } from './i18n';
+import { playerName, setPlayerName, standing, type Board } from './ranking';
+import { Scoreboard } from './scoreboard';
+import { bestScore, type Run } from './scores';
 
 /**
  * The start screen: free roam or one of the game modes.
@@ -37,21 +39,22 @@ export class Menu {
   private readonly modes = document.getElementById('modes')!;
   private readonly result = document.getElementById('result')!;
   private readonly scoresBtn = document.getElementById('scoresBtn')!;
+  private readonly scoreboard = new Scoreboard();
+  /** The game last played, whose tab the high scores open on. */
+  private lastMode: string | undefined;
+  /** Where the last run stands on the shared board, once known. */
+  private standing: Promise<Board> | null = null;
   open = true;
 
   constructor(private readonly onPick: (c: Choice) => void) {
     onLang(() => { this.render(); this.redraw?.(); });
-    // the icon opens your records over the cards, and closes them again
-    this.scoresBtn.addEventListener('click', () => {
-      if (this.scoresBtn.classList.contains('on')) this.closePanel();
-      else this.showScores();
-    });
+    // the icon opens the high scores in a box over the menu
+    this.scoresBtn.addEventListener('click', () => this.scoreboard.show(this.lastMode));
   }
 
   /** Clears the panel above the cards. */
   private closePanel(): void {
     this.result.classList.remove('on');
-    this.scoresBtn.classList.remove('on');
     this.redraw = null;
   }
 
@@ -78,6 +81,7 @@ export class Menu {
     this.open = false;
     this.boot.style.display = 'none';
     this.closePanel();
+    this.scoreboard.close();
   }
 
   private pick(c: Choice): void {
@@ -94,12 +98,18 @@ export class Menu {
       this.buttons([[t('menu.start'), () => this.pick({ id, seed })]]),
     );
     this.result.classList.add('on');
-    this.scoresBtn.classList.remove('on');
     this.redraw = () => this.challenge(id, seed);
   }
 
-  /** After a game: the score and what next. */
-  showResult(id: string, seed: number | null, r: Result, newBest: boolean): void {
+  /** After a game: the score, its place on the shared board, and what next. */
+  showResult(id: string, seed: number | null, r: Result, newBest: boolean, run: Run): void {
+    this.lastMode = id;
+    this.standing = seed !== null && playerName() ? standing(run) : null;
+    this.drawResult(id, seed, r, newBest, run);
+    this.show();
+  }
+
+  private drawResult(id: string, seed: number | null, r: Result, newBest: boolean, run: Run): void {
     const info = MODE_INFO.find((i) => i.id === id)!;
     const best = seed === null ? null : bestScore(id, seed);
     const shown = num(best ?? 0, 0);
@@ -115,6 +125,7 @@ export class Menu {
     if (!newBest && best !== null && best > r.score && r.score >= best * 0.7) {
       kids.push(h('p', 'short', t('menu.short', { n: num(best - r.score, 0) })));
     }
+    if (seed !== null) kids.push(this.rankLine(id, seed, r, newBest, run));
     kids.push(
       ...r.lines.slice(0, -1).map((l) => h('p', '', l)),
       h('p', '', [t('menu.stats', { c: r.combo }), r.golds ? t('menu.golds', { g: r.golds }) : '']
@@ -139,68 +150,52 @@ export class Menu {
     kids.push(row);
     this.result.replaceChildren(...kids);
     this.result.classList.add('on');
-    this.scoresBtn.classList.remove('on');
-    this.show();
-    this.redraw = () => this.showResult(id, seed, r, newBest);
+    this.redraw = () => this.drawResult(id, seed, r, newBest, run);
   }
 
-  /** Your own records: per mode, and the last few games. */
-  showScores(): void {
-    const today = dailySeed();
-    const all = runs();
-    const kids: HTMLElement[] = [h('h3', '', t('scores.title'))];
-    if (!all.length) {
-      kids.push(h('p', '', t('scores.none')));
-    } else {
-      const table = h('table', 'scores');
-      const head = h('tr', '');
-      for (const k of ['scores.mode', 'scores.best', 'scores.today', 'scores.played', 'scores.medals']) {
-        head.append(h('th', '', t(k)));
-      }
-      table.append(head);
-      for (const m of MODE_INFO) {
-        const s = stats(m.id, today);
-        const row = h('tr', '');
-        const medal = s.best?.medal ? ` ${MEDALS[s.best.medal - 1]}` : '';
-        row.append(
-          h('td', '', `${m.emoji} ${modeText(m.id, 'title')}`),
-          h('td', 'n', s.best ? `${num(s.best.score, 0)}${medal}` : '–'),
-          h('td', 'n', s.today ? num(s.today.score, 0) : '–'),
-          h('td', 'n', String(s.played)),
-          h('td', 'n', s.medals.some(Boolean)
-            ? s.medals.map((n, i) => (n ? `${MEDALS[i]}${n}` : '')).filter(Boolean).reverse().join(' ') : '–'),
-        );
-        table.append(row);
-      }
-      const wrap = h('div', 'scorewrap');
-      wrap.append(table);
-      kids.push(wrap, h('p', 'sub', t('scores.recent')));
-      const list = h('div', 'recent');
-      const when = new Intl.DateTimeFormat(lang === 'de' ? 'de-DE' : 'en-GB',
-                                           { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
-      for (const r of all.slice(-8).reverse()) {
-        const info = MODE_INFO.find((i) => i.id === r.mode);
-        if (!info) continue;
-        list.append(h('div', '', `${info.emoji} ${t('game.points', { n: num(r.score, 0) })}`
-          + `${r.medal ? ` ${MEDALS[r.medal - 1]}` : ''} · ${when.format(r.at)}`
-          + (r.seed === null ? ` · ${t('scores.unranked')}` : '')));
-      }
-      kids.push(list);
+  /** The run's place among everyone on the course; without a name, a field to join. */
+  private rankLine(id: string, seed: number, r: Result, newBest: boolean, run: Run): HTMLElement {
+    if (this.standing) {
+      const p = h('p', 'rank', '…');
+      this.standing.then(
+        (b) => {
+          p.textContent = b.me ? t(b.local ? 'board.localRank' : 'board.rank', { rank: b.me.rank, n: b.players }) : '';
+        },
+        (e) => { p.textContent = t((e as Error).message === '409' ? 'board.taken' : 'board.offline'); p.className = 'src'; });
+      return p;
     }
-    kids.push(h('p', 'src', t('scores.local')),
-              this.buttons([[t('scores.back'), () => this.closePanel()]]));
-    this.result.replaceChildren(...kids);
-    this.result.classList.add('on');
-    this.scoresBtn.classList.add('on');
-    this.redraw = () => this.showScores();
-    this.boot.scrollTop = 0;
+    const form = h('form', 'join');
+    const input = h('input', '');
+    input.type = 'text';
+    input.maxLength = 20;
+    input.setAttribute('autocomplete', 'nickname');
+    input.spellcheck = false;
+    input.placeholder = t('board.namePh');
+    const go = h('button', '', t('board.joinBtn'));
+    const msg = h('p', 'src');
+    const row = h('div', 'row');
+    row.append(input, go);
+    form.append(h('p', '', t('board.join')), row, msg);
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      go.disabled = true;
+      msg.textContent = '…';
+      const res = await setPlayerName(input.value);
+      go.disabled = false;
+      if (res !== 'ok' && res !== 'local') {
+        msg.textContent = t(`board.${res}`);
+        return;
+      }
+      this.standing = standing(run);
+      this.drawResult(id, seed, r, newBest, run);
+    });
+    return form;
   }
 
   /** A game left before the end. */
   showAbandoned(): void {
     this.result.replaceChildren(h('p', '', t('menu.abandoned')));
     this.result.classList.add('on');
-    this.scoresBtn.classList.remove('on');
     this.show();
     this.redraw = () => this.showAbandoned();
   }

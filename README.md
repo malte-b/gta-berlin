@@ -171,15 +171,69 @@ VITE_TILE_BASE=https://s3.example.berlin/gta-berlin/ npm run build
 
 ### Scores
 
-Scores live in the browser for now (`web/src/scores.ts`). A run is plain
-data - mode, course seed, points, targets, medal, best combo, time - so a
-shared board can take the same record later: a small API in front of a
-Postgres table on the Datahub (the browser never talks to Postgres
-directly), `POST /runs` to submit and `GET /runs?mode=&seed=&limit=` for
-a course's top list. A shared board needs what a local one does not: a
-player name or pseudonym rather than any account data, rate limits, and a
-plausibility check on the server - a 60 s Döner run with 40 targets did not
-happen - since anyone can send any number.
+Every finished game is kept in the browser (`web/src/scores.ts`). The 🏆 on
+the start screen opens the high scores: a tab per game with today's course on
+the shared board, and your own record and games in that mode.
+
+A list ranks each player's best by targets reached - markets, trees, Döner -
+with points only between runs that reached as many, since points mix in
+combos and golden targets and say little to someone else. Medals (fixed
+target counts per mode) stay in the game as milestones and on the result
+screen, not on the lists.
+
+The shared board is a Postgres database on the Datahub. It is reached only
+through the Datahub's Hasura GraphQL API (`https://backend-api.data-hub.berlin`),
+and only by a small API in `api/`, which holds the credentials and does the
+checks below; the browser never talks to Hasura or Postgres itself:
+
+| route | |
+|---|---|
+| `GET /api/runs?mode=&seed=&limit=&name=` | a course's top list (each player's best: targets, then points), and where `name` stands |
+| `POST /api/runs` `{ token, name, run }` | keep a finished run; answers with the board |
+| `POST /api/player` `{ token, name }` | take a nickname, or change yours |
+
+* **Joining is a nickname, nothing more.** Without one, runs stay in the
+  browser. Once a player picks a name, every ranked run goes up, and so does
+  today's best in each mode from before. No accounts, no e-mail, no IP
+  addresses are stored.
+* **A name belongs to one browser.** It holds a random token whose hash the
+  server keeps with the name, so nobody else can post under it. Each name
+  has its own token, so friends taking turns on one device each keep their
+  place: picking another name switches player, it does not rename. Names are
+  unique regardless of case. Clearing the browser's storage loses the names.
+* **Checks on the server:** names are 2-20 letters, digits, spaces, `- _ .`;
+  a run must be plausible for its mode (no more targets than a round allows,
+  no more points than those targets can bring); at most 30 writes a minute
+  from one address per instance. Anyone can still send a made-up score that
+  passes, so for a public launch add a rate limit in Vercel's firewall too.
+* **Moderation:** `update berlin_game.players set hidden = true where name_key = lower('…');`
+  takes a name off the board.
+
+Setup, once, by whoever holds the Hasura admin secret (the Datahub team):
+with `HASURA_ADMIN_SECRET` in `.env` (see `.env.example`),
+
+```bash
+npm run db:schema
+```
+
+creates the tables (`db/schema.sql`, schema `berlin_game`), has Hasura track
+them, links each run to its player, and gives the role `berlin_game` what
+the API needs: insert and read players and runs, update a player's name,
+never `hidden` or the token hash. Safe to run again. Without the script, the
+same can be done by hand in the Hasura console.
+
+The API then signs in as that role: `HASURA_TOKEN`, a JWT for it (Hasura
+checks JWTs against the key in its `HASURA_GRAPHQL_JWT_SECRET` but issues
+none; with that key as `HASURA_JWT_KEY` in `.env`, `npm run db:token` signs
+one and writes it into `.env`), or else `HASURA_ADMIN_SECRET` with `HASURA_ROLE=berlin_game`, which
+Hasura holds to the role's permissions but which would open everything if it
+leaked. Set them in Vercel's environment variables and, for `npm run dev`,
+in `.env`. Where the board can't be reached - no network, no `api/` on a
+static host, no credentials - the game falls
+back to local storage: each course's list shows the best of each name
+played in this browser, a name is kept here until the board can take it,
+and runs not yet sent go up the next time one is looked at with the board
+back.
 
 ### Data layers
 
