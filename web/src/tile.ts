@@ -9,7 +9,7 @@ import { closeOnUpload, freeOnUpload, shareMaterialTextures, sharedTextures, shr
 import type { CoverJob, MapJob, Raster } from './mapworker';
 import { LOW } from './quality';
 import { NavGrid, TerrainField, parseProps, parseTrees, type Tree } from './tiles';
-import { bridgeMaterial, crownMaterial, photoRoofs, terrainMaterial, trunkMaterial,
+import { bridgeMaterial, crownMaterial, litWindows, photoRoofs, terrainMaterial, trunkMaterial,
          type GroundKind, type GroundTextures, type OrthoTile } from './materials';
 
 const TERRAIN_CHUNK = 100;          // metres per terrain mesh; one orthophoto each
@@ -605,6 +605,7 @@ export class Tile {
       if (std.name?.startsWith('Windows') && std.map) {
         std.emissiveMap = std.map;
         std.emissive = new THREE.Color(0, 0, 0);
+        litWindows(std);
         this.windowMats.push(std);
       }
       const mesh = new THREE.Mesh(merged, mat);
@@ -643,6 +644,7 @@ export class Tile {
         if (mat.name?.startsWith('Windows') && mat.map) {
           mat.emissiveMap = mat.map;
           mat.emissive = new THREE.Color(0, 0, 0);
+          litWindows(mat);
           this.windowMats.push(mat);
         }
       }

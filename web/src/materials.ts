@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { FOG_DAY, SKY_GLSL } from './atmosphere';
 
 /*
  * Materials.
@@ -333,6 +334,63 @@ export function photoRoofs(m: THREE.Material, map: THREE.Texture,
 }
 
 /**
+ * OSM2World's window layer, lit from inside after dark - but not every
+ * window. Its texture repeats once per window (widthPerEntity in the
+ * standard style), so the whole-number part of the UV names a window on its
+ * wall; the wall itself is told apart by its direction and its distance from
+ * the tile's origin. A hash of both decides whether anyone is home, and in
+ * what light: mostly warm, some cold LED or television blue, shops on the
+ * ground floor more often. The emissive colour (World.setEnv) still fades the
+ * whole layer in at night.
+ */
+export function litWindows(m: THREE.MeshStandardMaterial): void {
+  if (m.userData.litWindows) return;
+  m.userData.litWindows = true;
+  // photoRoofs may have got here first; both patches apply
+  const before = m.onBeforeCompile.bind(m);
+  const beforeKey = m.customProgramCacheKey.bind(m);
+  m.onBeforeCompile = (shader, renderer) => {
+    before(shader, renderer);
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nflat varying vec3 vWinWall;')
+      .replace('#include <begin_vertex>', /* glsl */`#include <begin_vertex>
+        {
+          vec2 wn = normalize(objectNormal.xz + vec2(1e-5));
+          vWinWall = vec3(floor(wn * 8.0 + 0.5), floor(dot(wn, transformed.xz) * 0.5 + 0.5));
+        }`);
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', /* glsl */`#include <common>
+        flat varying vec3 vWinWall;
+        float winHash(vec3 p) {
+          p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+          p += dot(p, p.yzx + 33.33);
+          return fract((p.x + p.y) * p.z);
+        }
+      `)
+      .replace('#include <emissivemap_fragment>', /* glsl */`#include <emissivemap_fragment>
+        #ifdef USE_MAP
+        {
+          vec2 win = floor(vMapUv);
+          float h = winHash(vec3(win.x + vWinWall.z * 7.0, win.y - vWinWall.x * 13.0, vWinWall.y + 0.5));
+          float k = winHash(vec3(h * 91.0, win.yx));
+          // v counts storeys down from 1 at the foot of the wall
+          float lit = step(h, win.y > -0.5 ? 0.6 : 0.38);
+          vec3 tint = k < 0.18 ? vec3(0.75, 0.95, 1.45) : vec3(0.65 + 0.7 * k);
+          totalEmissiveRadiance *= lit * tint;
+          #ifdef USE_EMISSIVEMAP
+            // the light is behind the glass: dark panes glow, pale frames do not
+            float pane = 1.0 - smoothstep(0.12, 0.45, dot(emissiveColor.rgb, vec3(0.3333)));
+            totalEmissiveRadiance = emissive * pane * lit * tint;
+          #endif
+        }
+        #endif
+      `);
+  };
+  m.customProgramCacheKey = () => `${beforeKey()}:lit-windows`;
+  m.needsUpdate = true;
+}
+
+/**
  * Tree crowns: lumpy instanced blobs. Colour comes per instance (genus plus
  * jitter) and the crown geometry carries baked ambient occlusion in its vertex
  * colours, darker underneath and inside, which is most of what makes a blob
@@ -350,16 +408,16 @@ export function trunkMaterial(): THREE.MeshStandardMaterial {
 
 /* Sky --------------------------------------------------------------------- */
 
-/** Gradient sky with a sun disc. A raw shader, so it tone maps itself to
- *  match what the renderer does to everything else. */
+/** The sky dome: atmosphere.ts's sky with a sun disc. Tone mapped and
+ *  encoded like every other material, so its horizon is exactly the haze
+ *  the city fades into. uFog is the fog colour, in linear light. */
 export function skyMaterial(): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     side: THREE.BackSide,
     depthWrite: false,
     fog: false,
     uniforms: {
-      night: { value: 0 },
-      sunDir: { value: new THREE.Vector3(0.42, 0.78, 0.46).normalize() },
+      uFog: { value: FOG_DAY.clone() },
     },
     vertexShader: /* glsl */`
       varying vec3 vDir;
@@ -371,26 +429,16 @@ export function skyMaterial(): THREE.ShaderMaterial {
     fragmentShader: /* glsl */`
       precision highp float;
       varying vec3 vDir;
-      uniform float night;
-      uniform vec3 sunDir;
-      vec3 srgbToLinear(vec3 c) { return pow(c, vec3(2.2)); }
-      vec3 tonemap(vec3 x) {
-        const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
-        return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-      }
+      uniform vec3 uFog;
+      ${SKY_GLSL}
       void main() {
         vec3 d = normalize(vDir);
-        float h = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
-        vec3 dayLow  = vec3(0.72, 0.79, 0.88);
-        vec3 dayHigh = vec3(0.31, 0.48, 0.75);
-        vec3 ngtLow  = vec3(0.09, 0.11, 0.17);
-        vec3 ngtHigh = vec3(0.02, 0.03, 0.07);
-        vec3 col = mix(mix(dayLow, dayHigh, pow(h, 0.8)),
-                       mix(ngtLow, ngtHigh, pow(h, 0.8)), night);
-        col = srgbToLinear(col);
-        float sun = pow(max(dot(d, normalize(sunDir)), 0.0), 220.0);
-        col += vec3(1.0, 0.92, 0.72) * sun * (1.0 - night * 0.85);
-        gl_FragColor = vec4(tonemap(col * 1.35), 1.0);
+        float s = max(dot(d, SUN_DIR), 0.0);
+        vec3 col = atmoSky(d, uFog)
+                 + vec3(1.0, 0.92, 0.72) * (pow(s, 900.0) * 8.0 + pow(s, 64.0) * 0.12) * atmoDay(uFog);
+        gl_FragColor = vec4(col, 1.0);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
       }
     `,
   });

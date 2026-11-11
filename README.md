@@ -556,7 +556,14 @@ Everything in the city uses three's standard PBR material, so buildings,
 terrain and trees share one sun, one set of shadows (a 4096² map that follows
 the player), fog and ACES tone mapping. The terrain and trees extend the
 standard material through `onBeforeCompile` rather than being raw shaders,
-which is what lets them receive shadows. At night the window layer glows.
+which is what lets them receive shadows. At night the window layer glows,
+one window at a time: a hash per window decides which are lit, and in what
+light.
+
+The haze and the sky are one model (`web/src/atmosphere.ts`, which replaces
+three's fog chunks): a fogged roof fades into exactly the sky behind it,
+warmer towards the sun, and the haze thins above eye level so the skyline
+stands out of the streets. The water mirrors the same sky, by Fresnel.
 
 ---
 

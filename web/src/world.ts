@@ -487,8 +487,8 @@ export class World {
       for (const a of t.animated) {
         if (a.uniforms.uTime) a.uniforms.uTime.value = time;
       }
-      // windows warm up after dark; the lit fraction is the texture's own
-      // brightness, so frames stay dark and panes glow
+      // windows warm up after dark; materials.ts litWindows picks which
+      // have a light on and lights their glass
       for (const w of t.windowMats) {
         w.emissive.setRGB(1.0, 0.72, 0.42).multiplyScalar(night * 0.9);
       }

@@ -8,6 +8,7 @@ import { Locator } from './locate';
 import { PoiLayer } from './pois';
 import { LayerPanel } from './layerpanel';
 import { skyMaterial } from './materials';
+import { FOG_DAY, FOG_NIGHT, SUN_DIR, installAtmosphere } from './atmosphere';
 import { makeGame, type Game } from './games';
 import { playerName } from './ranking';
 import { bestScore, recordRun } from './scores';
@@ -44,6 +45,7 @@ window.addEventListener('unhandledrejection', (e) => fail(e.reason));
 // A phone (quality.ts) draws at 1.5x without multisampling: a 3x screen at
 // 2x with 4x MSAA is ~60 MB of framebuffer before anything is drawn, and
 // the extra sharpness barely shows on a screen that small.
+installAtmosphere();
 const renderer = new THREE.WebGLRenderer({
   antialias: !LOW,
   powerPreference: 'high-performance',
@@ -51,7 +53,7 @@ const renderer = new THREE.WebGLRenderer({
 renderer.setPixelRatio(Math.min(devicePixelRatio, LOW ? 1.5 : 2));
 renderer.setSize(innerWidth, innerHeight);
 // Everything in the city is a standard PBR material now, so three does the
-// tone mapping and colour conversion; only the sky still does its own.
+// tone mapping and colour conversion - the sky and the haze included.
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
 renderer.shadowMap.enabled = true;
@@ -61,8 +63,6 @@ document.body.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(66, innerWidth / innerHeight, 0.25, 6000);
 
-const FOG_DAY = new THREE.Color(0x9fb2c6);
-const FOG_NIGHT = new THREE.Color(0x0d1119);
 const fog = new THREE.Fog(FOG_DAY.getHex(), 260, 1100);
 const background = FOG_DAY.clone();
 const FOG_SCRATCH = new THREE.Color();
@@ -74,7 +74,7 @@ const sky = new THREE.Mesh(new THREE.SphereGeometry(4000, 24, 16), skyMaterial()
 sky.frustumCulled = false;
 scene.add(sky);
 
-const sunDir = new THREE.Vector3(0.42, 0.72, 0.46).normalize();
+const sunDir = SUN_DIR;
 
 // A neutral studio environment for reflections and fill. Without one, every
 // metallic or glossy surface OSM2World's materials declare - window glass
@@ -647,8 +647,7 @@ function frame(now: number): void {
   fog.far = far;
   background.copy(fogColor);
   sky.position.copy(camera.position);
-  sky.material.uniforms.night.value = nightMix;
-  sky.material.uniforms.sunDir.value.copy(sunDir);
+  sky.material.uniforms.uFog.value.copy(fogColor);
 
   world.setEnv({ night: nightMix, time: acc });
 

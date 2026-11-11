@@ -82,6 +82,22 @@ export function waterMaterial(): THREE.MeshStandardMaterial {
           vec3 B = normalize(mat3(viewMatrix) * vec3(0.0, 0.0, 1.0));
           normal = normalize(normal + T * w.x + B * w.y);
         }
+      `)
+      // The sky it mirrors is the one overhead (atmosphere.ts), not the
+      // image-based environment, and by Fresnel: barely at your feet, nearly
+      // all of it towards the far bank.
+      .replace('#include <lights_fragment_maps>', '#include <lights_fragment_maps>\nradiance = vec3(0.0);')
+      .replace('#include <opaque_fragment>', /* glsl */`
+        #ifdef USE_FOG
+        {
+          vec3 V = normalize(vViewPosition);
+          vec3 R = inverseTransformDirection(reflect(-V, normal), viewMatrix);
+          R.y = abs(R.y);
+          float F = 0.02 + 0.98 * pow(1.0 - clamp(dot(normal, V), 0.0, 1.0), 5.0);
+          outgoingLight += atmoSky(R, fogLinear()) * F;
+        }
+        #endif
+        #include <opaque_fragment>
       `);
   };
   m.customProgramCacheKey = () => 'water';
