@@ -2,8 +2,8 @@ import { MODE_INFO, dailySeed } from './games';
 import { better, isSent, markSent, nameRuns, runs, runsOf, type Run } from './scores';
 
 /**
- * The shared board: everyone's best on a course, kept in Postgres on the
- * Datahub behind a small API (api/). Joining is a nickname, nothing more;
+ * The shared board: everyone's best on a course, kept in a Supabase Postgres
+ * behind a small API (api/). Joining is a nickname, nothing more;
  * until a player picks one, their runs stay in this browser (scores.ts).
  *
  * A name is held by a random token this browser keeps, so nobody else can

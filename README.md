@@ -181,10 +181,9 @@ combos and golden targets and say little to someone else. Medals (fixed
 target counts per mode) stay in the game as milestones and on the result
 screen, not on the lists.
 
-The shared board is a Postgres database on the Datahub. It is reached only
-through the Datahub's Hasura GraphQL API (`https://backend-api.data-hub.berlin`),
-and only by a small API in `api/`, which holds the credentials and does the
-checks below; the browser never talks to Hasura or Postgres itself:
+The shared board is a Postgres database on Supabase. It is reached only by a
+small API in `api/`, which holds the credentials and does the checks below;
+the browser never talks to the database itself:
 
 | route | |
 |---|---|
@@ -209,26 +208,23 @@ checks below; the browser never talks to Hasura or Postgres itself:
 * **Moderation:** `update berlin_game.players set hidden = true where name_key = lower('…');`
   takes a name off the board.
 
-Setup, once, by whoever holds the Hasura admin secret (the Datahub team):
-with `HASURA_ADMIN_SECRET` in `.env` (see `.env.example`),
+Setup, once: put the transaction pooler string from Supabase's dashboard
+("Connect") in `.env` as `DATABASE_URL`, as it is, and the database password
+as `DATABASE_PASSWORD` (see `.env.example`), then
 
 ```bash
 npm run db:schema
 ```
 
-creates the tables (`db/schema.sql`, schema `berlin_game`), has Hasura track
-them, links each run to its player, and gives the role `berlin_game` what
-the API needs: insert and read players and runs, update a player's name,
-never `hidden` or the token hash. Safe to run again. Without the script, the
-same can be done by hand in the Hasura console.
+creates the tables (`db/schema.sql`, schema `berlin_game`). Safe to run
+again. Use the pooler, not the direct `db.<ref>.supabase.co` host: that one
+has only an IPv6 address, which Vercel and many networks can't reach. The
+connection checks Supabase's certificate against its root CA, which is in
+`api/_pg.ts`. Supabase's public APIs (`anon`, `authenticated`) have no access
+to the schema; only `api/` reaches it.
 
-The API then signs in as that role: `HASURA_TOKEN`, a JWT for it (Hasura
-checks JWTs against the key in its `HASURA_GRAPHQL_JWT_SECRET` but issues
-none; with that key as `HASURA_JWT_KEY` in `.env`, `npm run db:token` signs
-one and writes it into `.env`), or else `HASURA_ADMIN_SECRET` with `HASURA_ROLE=berlin_game`, which
-Hasura holds to the role's permissions but which would open everything if it
-leaked. Set them in Vercel's environment variables and, for `npm run dev`,
-in `.env`. Where the board can't be reached - no network, no `api/` on a
+Set the same two variables in Vercel's environment variables; `npm run dev`
+reads them from `.env`. Where the board can't be reached - no network, no `api/` on a
 static host, no credentials - the game falls
 back to local storage: each course's list shows the best of each name
 played in this browser, a name is kept here until the board can take it,

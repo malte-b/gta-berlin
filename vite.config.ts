@@ -43,7 +43,7 @@ function berlinTiles(): Plugin {
 }
 
 // The score API (api/) runs as serverless functions on Vercel; here the dev
-// server answers for them, with HASURA_* from .env at the repository root.
+// server answers for them, with DATABASE_* from .env at the repository root.
 function scoreApi(): Plugin {
   return {
     name: 'score-api',
@@ -55,9 +55,9 @@ function scoreApi(): Plugin {
 }
 
 export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, __dirname, 'HASURA_');
+  const env = loadEnv(mode, __dirname, 'DATABASE_');
   for (const [k, v] of Object.entries(env)) {
-    if (k.startsWith('HASURA_') && v) process.env[k] ??= v;
+    if (k.startsWith('DATABASE_') && v) process.env[k] ??= v;
   }
   return {
     root: 'web',

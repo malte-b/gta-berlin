@@ -1,4 +1,4 @@
--- The shared high score board, in its own schema on the Datahub's Postgres.
+-- The shared high score board, in its own schema on the Supabase Postgres.
 -- Safe to run again: npm run db:schema
 --
 -- A player is a nickname and the hash of a random token that only their

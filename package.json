@@ -13,17 +13,18 @@
     "check": "node scripts/check.ts",
     "test:bridges": "node scripts/test-bridges.ts",
     "check:crossings": "node scripts/crossings.ts",
-    "db:schema": "node --env-file-if-exists=.env scripts/db-schema.ts",
-    "db:token": "node --env-file-if-exists=.env scripts/hasura-jwt.ts"
+    "db:schema": "node --env-file-if-exists=.env scripts/db-schema.ts"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
+    "@types/pg": "^8.23.1",
     "@types/three": "^0.169.0",
     "typescript": "^7.0.2",
     "vite": "^5.4.10"
   },
   "dependencies": {
     "nipplejs": "^1.0.4",
+    "pg": "^8.23.1",
     "three": "^0.169.0"
   }
 }

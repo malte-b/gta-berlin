@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import pg from 'pg';
+import { connection } from './_pg.js';
 
 /**
  * What the score API shares: the way to the board's tables, the checks on
@@ -8,47 +10,22 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
  * handlers (vite.config.ts). The browser never talks to the database itself.
  * Files starting with _ are not routes on Vercel.
  *
- * The tables (db/schema.sql) are in the Datahub's Postgres, which is only
- * reached through its Hasura GraphQL API: HASURA_URL, the Datahub's by
- * default. The API signs in with either
- *  - HASURA_TOKEN, a JWT the Datahub issues for the berlin_game role, or
- *  - HASURA_ADMIN_SECRET, acting as HASURA_ROLE (berlin_game unless set),
- *    so that role's permissions still apply to every request.
- * They live in Vercel's environment variables and, for development, in .env.
+ * The tables (db/schema.sql) are in a Supabase Postgres; api/_pg.ts has the
+ * way there.
  */
 
-const DATAHUB = 'https://backend-api.data-hub.berlin';
+// one small pool per serverless instance; the pooler shares the connections
+let pool: pg.Pool | null = null;
 
-function auth(env = process.env): Record<string, string> | null {
-  if (env.HASURA_TOKEN) return { Authorization: `Bearer ${env.HASURA_TOKEN}` };
-  if (env.HASURA_ADMIN_SECRET) {
-    return { 'x-hasura-admin-secret': env.HASURA_ADMIN_SECRET, 'x-hasura-role': env.HASURA_ROLE || 'berlin_game' };
+/** One SQL statement. Without a connection string the board is off: 503. */
+export async function sql<T extends pg.QueryResultRow>(text: string, values: unknown[]): Promise<T[]> {
+  if (!pool) {
+    const c = connection();
+    if (!c) throw new HttpError(503, 'no database configured');
+    pool = new pg.Pool({ ...c, max: 3, connectionTimeoutMillis: 6000, query_timeout: 6000, idleTimeoutMillis: 10_000 });
+    pool.on('error', (e) => console.error(e));
   }
-  return null;
-}
-
-/** An error Hasura answered with; code is e.g. constraint-violation. */
-export class GqlError extends Error {
-  constructor(message: string, readonly code: string | undefined) {
-    super(message);
-  }
-}
-
-/** One GraphQL request to Hasura. Without credentials the board is off: 503. */
-export async function gql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
-  const headers = auth();
-  if (!headers) throw new HttpError(503, 'no database configured');
-  const r = await fetch(`${(process.env.HASURA_URL || DATAHUB).replace(/\/$/, '')}/v1/graphql`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...headers },
-    body: JSON.stringify({ query, variables }),
-    signal: AbortSignal.timeout(6000),
-  });
-  const body = await r.json() as { data?: T; errors?: { message: string; extensions?: { code?: string } }[] };
-  const e = body.errors?.[0];
-  if (e) throw new GqlError(e.message, e.extensions?.code);
-  if (!r.ok || !body.data) throw new Error(`hasura answered ${r.status}`);
-  return body.data;
+  return (await pool.query<T>(text, values)).rows;
 }
 
 export class HttpError extends Error {
@@ -140,30 +117,25 @@ export function tokenHash(v: unknown): string {
  */
 export async function claim(token: unknown, name: string): Promise<number> {
   try {
-    const d = await gql<{ insert_berlin_game_players_one: { id: number | string } | null }>(
-      `mutation ($token_hash: String!, $name: String!, $name_key: String!) {
-         insert_berlin_game_players_one(
-           object: { token_hash: $token_hash, name: $name, name_key: $name_key },
-           on_conflict: { constraint: players_token_hash_key, update_columns: [name, name_key] }
-         ) { id }
-       }`,
-      { token_hash: tokenHash(token), name, name_key: name.toLowerCase() });
-    if (!d.insert_berlin_game_players_one) throw new Error('player not written');
-    return Number(d.insert_berlin_game_players_one.id);
+    const [row] = await sql<{ id: string }>(
+      `insert into berlin_game.players (token_hash, name, name_key) values ($1, $2, $3)
+       on conflict (token_hash) do update set name = excluded.name, name_key = excluded.name_key
+       returning id`,
+      [tokenHash(token), name, name.toLowerCase()]);
+    return Number(row.id);
   } catch (e) {
     // the token's own row is updated, so this is name_key: someone else's
-    if (e instanceof GqlError && e.code === 'constraint-violation') throw new HttpError(409, 'name taken');
+    if (e instanceof pg.DatabaseError && e.code === '23505') throw new HttpError(409, 'name taken');
     throw e;
   }
 }
 
 /** Keep a run of a player's. */
 export async function addRun(player: number, run: RunIn): Promise<void> {
-  await gql(
-    `mutation ($run: berlin_game_runs_insert_input!) {
-       insert_berlin_game_runs(objects: [$run]) { affected_rows }
-     }`,
-    { run: { player_id: player, ...run } });
+  await sql(
+    `insert into berlin_game.runs (player_id, mode, seed, score, count, medal, combo)
+     values ($1, $2, $3, $4, $5, $6, $7)`,
+    [player, run.mode, run.seed, run.score, run.count, run.medal, run.combo]);
 }
 
 /**
@@ -238,27 +210,16 @@ export interface Board {
  * points between those that reached as many (web/src/scores.ts, better).
  */
 export async function board(mode: string, seed: number, limit: number, name: string | null): Promise<Board> {
-  // each player's best comes from Hasura; the places are counted here, as
-  // GraphQL has no rank(). One course a day stays small.
-  const d = await gql<{ berlin_game_runs: (Omit<Entry, 'rank' | 'name'> & {
-    created_at: string; player: { name: string; name_key: string };
-  })[] }>(
-    `query ($mode: String!, $seed: Int!) {
-       berlin_game_runs(
-         where: { mode: { _eq: $mode }, seed: { _eq: $seed }, player: { hidden: { _eq: false } } },
-         distinct_on: player_id,
-         order_by: [{ player_id: asc }, { count: desc }, { score: desc }, { created_at: asc }]
-       ) { count score medal created_at player { name name_key } }
-     }`,
-    { mode, seed });
-  const best = d.berlin_game_runs
-    .sort((a, b) => b.count - a.count || b.score - a.score || a.created_at.localeCompare(b.created_at));
-  const ranked: (Entry & { name_key: string })[] = [];
-  for (const [i, r] of best.entries()) {
-    const tie = i > 0 && r.count === best[i - 1].count && r.score === best[i - 1].score;
-    ranked.push({ rank: tie ? ranked[i - 1].rank : i + 1, name: r.player.name, name_key: r.player.name_key,
-                  count: r.count, score: r.score, medal: r.medal });
-  }
+  // the whole course comes back, as the named player may stand anywhere on
+  // it; one course a day stays small
+  const ranked = await sql<Entry & { name_key: string }>(
+    `select rank() over (order by count desc, score desc)::int as rank, name, name_key, count, score, medal
+     from (select distinct on (r.player_id) p.name, p.name_key, r.count, r.score, r.medal, r.created_at
+           from berlin_game.runs r join berlin_game.players p on p.id = r.player_id
+           where r.mode = $1 and r.seed = $2 and not p.hidden
+           order by r.player_id, r.count desc, r.score desc, r.created_at) best
+     order by count desc, score desc, created_at`,
+    [mode, seed]);
   const entry = (e: Entry): Entry => ({ rank: e.rank, name: e.name, count: e.count, score: e.score, medal: e.medal });
   const mine = name === null ? undefined : ranked.find((e) => e.name_key === name.toLowerCase());
   return {
