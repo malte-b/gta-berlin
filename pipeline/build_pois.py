@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-"""Bake street names and points of interest into a local file.
+"""Bake street names and points of interest into the game's own files.
 
-Overpass is queried exactly once, at build time, and the result is projected
-into game-world metres and written to web/public/data/pois.json. The running
-game never talks to Overpass - it just reads that file - so playing the game
-puts no load on the API at all.
+Overpass is queried exactly once per tile, at build time, and the result is
+projected into game-world metres and written to web/public/data/: one file
+per tile of the tile base (pois/<E_N>.json) and pois.json for its single
+area. The running game never talks to Overpass - it just reads those files -
+so playing the game puts no load on the API at all.
 
-    python3 pipeline/build_pois.py            # uses the cached response if present
+The tiles themselves are hosted; this reads only their index
+(world.json, area/world.json) from the tile base at VITE_TILE_BASE (.env).
+
+    python3 pipeline/build_pois.py            # all of Berlin, cached responses if present
+    python3 pipeline/build_pois.py --area     # the single area
     python3 pipeline/build_pois.py --refresh  # re-query Overpass
 
 Data (c) OpenStreetMap contributors, ODbL.
@@ -16,6 +21,7 @@ import json
 import math
 import os
 import sys
+import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -264,20 +270,72 @@ def build(origin, world, cache_path, refresh=False, margin=40.0):
     }
 
 
+def tile_base():
+    """VITE_TILE_BASE from the environment or .env, as the game reads it."""
+    base = os.environ.get("VITE_TILE_BASE")
+    env = os.path.join(ROOT, ".env")
+    if not base and os.path.exists(env):
+        with open(env) as fh:
+            for line in fh:
+                key, sep, value = line.strip().partition("=")
+                if sep and key.strip() == "VITE_TILE_BASE":
+                    base = value.strip().strip("'\"")
+    if not base:
+        sys.exit("VITE_TILE_BASE is not set (see .env.example)")
+    return base.rstrip("/") + "/"
+
+
+def read_index(base, name):
+    """A world.json from the tile base: a URL, or a local tile build."""
+    url = base + name
+    if "://" not in url:
+        with open(os.path.join(ROOT, url)) as fh:
+            return json.load(fh)
+    with urllib.request.urlopen(url, timeout=60) as res:
+        return json.load(res)
+
+
+def write(path, out):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as fh:
+        json.dump(out, fh, separators=(",", ":"))
+    return os.path.getsize(path)
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--area", action="store_true",
+                    help="the single area (area/ in the tile base) instead of all of Berlin")
     ap.add_argument("--refresh", action="store_true",
-                    help="re-query Overpass instead of using the cached response")
+                    help="re-query Overpass instead of using the cached responses")
     args = ap.parse_args()
+    base = tile_base()
 
-    manifest = json.load(open(os.path.join(OUT, "world.json")))
-    out = build(manifest["origin"], manifest["world"],
-                os.path.join(CACHE, "pois_overpass.json"), args.refresh)
-    path = os.path.join(OUT, "pois.json")
-    with open(path, "w") as fh:
-        json.dump(out, fh, separators=(",", ":"))
-    log("Wrote pois.json (%.0f KB)" % (os.path.getsize(path) / 1024))
+    if args.area:
+        manifest = read_index(base, "area/world.json")
+        size = write(os.path.join(OUT, "pois.json"),
+                     build(manifest["origin"], manifest["world"],
+                           os.path.join(CACHE, "pois_overpass.json"), args.refresh))
+        log("Wrote pois.json (%.0f KB)" % (size / 1024))
+        return 0
+
+    index = read_index(base, "world.json")
+    keys = sorted(index["tiles"])
+    total = 0
+    for i, key in enumerate(keys):
+        # margin 0: a POI on a tile's edge belongs to exactly one tile
+        total += write(os.path.join(OUT, "pois", key + ".json"),
+                       build(index["origin"], index["tiles"][key]["world"],
+                             os.path.join(CACHE, "pois", "pois_%s.json" % key),
+                             args.refresh, margin=0))
+        if (i + 1) % 100 == 0:
+            log("  %d/%d tiles" % (i + 1, len(keys)))
+    # tiles that are no longer in the build
+    for name in os.listdir(os.path.join(OUT, "pois")):
+        if name.endswith(".json") and name[:-5] not in index["tiles"]:
+            os.remove(os.path.join(OUT, "pois", name))
+    log("Wrote pois/ for %d tiles (%.1f MB)" % (len(keys), total / 1e6))
     return 0
 
 

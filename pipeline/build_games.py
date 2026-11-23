@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Bake the points the game modes are played on, from open data only.
 
-    web/public/data/games/markets.json    Christmas markets (sleigh run)
     web/public/data/games/cool.json       fountains, splash pools, bathing spots,
                                           cool rooms (heat wave)
     web/public/data/games/toilets.json    public toilets (toilet emergency)
@@ -10,19 +9,16 @@
                                           (Gieß den Kiez)
 
 Sources:
-  * Christmas markets: the Senate's yearly dataset as curated by ODIS for
-    weihnachtsmaerkte.odis-berlin.de (github.com/technologiestiftung/
-    weihnachtsmarktkarte), which adds exact coordinates (CC BY).
   * Drinking fountains, ornamental and splash fountains, cool rooms and
     bathing spots: gdi.berlin.de WFS (dl-de/zero-2.0; bathing spots CC BY 4.0).
     OSM amenity=drinking_water fills in fountains the city does not list.
   * Toilets: the toilet layer of build_layers.py (dl-de/zero-2.0).
   * Kebab shops and street pumps: OpenStreetMap (ODbL), read from the same
-    Geofabrik extract the tiled build uses. Pumps are selected the way
+    Geofabrik extract of Berlin (cache/osm). Pumps are selected the way
     Gieß den Kiez does: man_made=water_well with a pump, minus those tagged
     broken or locked.
-  * Young trees: the tree cadastre already cached by the world build
-    (cache/trees, dl-de/zero-2.0). Gieß den Kiez's rule of thumb is that
+  * Young trees: the tree cadastre, cached per km tile in
+    cache/trees (dl-de/zero-2.0). Gieß den Kiez's rule of thumb is that
     trees under 15 years need watering most; their age decides how thirsty
     a tree is in the game.
 
@@ -33,17 +29,15 @@ build and all of Berlin alike.
     python3 pipeline/build_games.py --refresh    # fetch again
 """
 import argparse
-import csv
 import glob
-import io
 import json
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import fetch                                                     # noqa: E402
-import osmlocal                                                  # noqa: E402
 import osmpbf                                                    # noqa: E402
 from geo import ORIGIN_E, ORIGIN_N, utm33                         # noqa: E402
 
@@ -52,8 +46,7 @@ ROOT = os.path.dirname(HERE)
 OUT = os.path.join(ROOT, "web", "public", "data", "games")
 CACHE = os.path.join(ROOT, "cache", "games")
 
-MARKETS = ("https://raw.githubusercontent.com/technologiestiftung/"
-           "weihnachtsmarktkarte/main/public/markets_2025.csv")
+OSM_PBF = "https://download.geofabrik.de/europe/germany/berlin-latest.osm.pbf"
 WFS = "https://gdi.berlin.de/services/wfs/"
 YOUNG = 15            # years; Gieß den Kiez's "young tree"
 
@@ -141,7 +134,11 @@ def osm(refresh):
     path = os.path.join(CACHE, "osm.json")
     if not refresh and os.path.exists(path):
         return json.load(open(path))
-    pbf = osmlocal.download(os.path.join(ROOT, "cache", "osm"))
+    pbf = os.path.join(ROOT, "cache", "osm", "berlin-latest.osm.pbf")
+    # a week old is fresh enough
+    if not os.path.exists(pbf) or time.time() - os.path.getmtime(pbf) > 7 * 86400:
+        log("  downloading %s ..." % OSM_PBF)
+        fetch.download(OSM_PBF, pbf, timeout=1800)
     want = lambda t: is_kebab(t) or is_pump(t) or is_drinking(t)     # noqa: E731
     ways, need = [], set()
     for _k, els in osmpbf.blocks(pbf, want={"way"}):
@@ -167,26 +164,6 @@ def osm(refresh):
 
 
 # --- the modes --------------------------------------------------------------
-
-def markets(refresh):
-    rows = csv.DictReader(io.StringIO(cached("markets_2025.csv", MARKETS, refresh)
-                                      .decode("utf-8-sig")))
-    pts = []
-    for r in rows:
-        if r.get("ignore") == "1" or r.get("inaktiv") == "1":
-            continue
-        try:
-            lat, lon = float(r["lat"]), float(r["lng"])
-        except (KeyError, ValueError):
-            continue
-        dates = "%s – %s" % (r.get("von", ""), r.get("bis", "")) if r.get("von") else ""
-        pts.append([*lonlat(lon, lat), short(r.get("shortname") or r.get("name"), 60),
-                    short(dates or r.get("strasse"))])
-    write("markets.json", {
-        "attribution": "Weihnachtsmärkte 2025, SenWEB Berlin / ODIS (CC BY)",
-        "points": pts})
-    return len(pts)
-
 
 def cool(refresh, osm_els):
     pts = []
@@ -272,7 +249,6 @@ def main():
     ap.add_argument("--refresh", action="store_true", help="download every source again")
     args = ap.parse_args()
     osm_els = osm(args.refresh)
-    log("markets   %5d" % markets(args.refresh))
     log("cool      %5d" % cool(args.refresh, osm_els))
     log("toilets   %5d" % toilets())
     log("doener    %5d" % doener(osm_els))
