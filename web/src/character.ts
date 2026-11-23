@@ -13,7 +13,7 @@ import { WATER_ORDER } from './water';
  * The look is soft toy rather than bare boxes: rounded blocks, capsule limbs,
  * a face, hands and sneakers, a hoodie and a backpack - the back is what the
  * chase camera sees most. Geometry and materials are shared through small
- * caches, so a second figure (Santa) costs next to nothing.
+ * caches.
  *
  * On foot the gait blends from a walk into a run with speed (poseWalk), and
  * the hips stand on whichever foot is lower, so feet meet the ground. The
@@ -37,14 +37,6 @@ export interface Rig {
   shinL: THREE.Group; shinR: THREE.Group;
   /** Ankles: a foot's rotation.x, positive tips the toes down. */
   footL: THREE.Object3D; footR: THREE.Object3D;
-}
-
-export interface Palette {
-  skin?: number; top?: number; legs?: number; hair?: number; shoes?: number;
-  /** A backpack in this colour; null for none. */
-  pack?: number | null;
-  /** The hoodie's hood, lying at the back of the neck. */
-  hood?: boolean;
 }
 
 const mats = new Map<string, THREE.MeshStandardMaterial>();
@@ -161,13 +153,13 @@ function dome(r: number, phi0: number, phiLen: number, thetaLen: number, m: THRE
     new THREE.SphereGeometry(r, 16, 10, phi0, phiLen, 0, thetaLen)), m);
 }
 
-export function makeHuman(palette: Palette = {}): THREE.Group {
-  const top = palette.top ?? JACKET;
-  const skinM = mat(palette.skin ?? SKIN, 0.7);
+export function makeHuman(): THREE.Group {
+  const top = JACKET;
+  const skinM = mat(SKIN, 0.7);
   const topM = mat(top, 0.85);
   const topShade = mat(shade(top, 0.8), 0.85);
-  const legsM = mat(palette.legs ?? 0x3a4a6b, 0.9);
-  const hairM = mat(palette.hair ?? 0x2a2118, 0.9);
+  const legsM = mat(0x3a4a6b, 0.9);
+  const hairM = mat(0x2a2118, 0.9);
   const dark = mat(0x1b1d22, 0.4);
   const white = mat(0xffffff, 0.4);
 
@@ -193,28 +185,24 @@ export function makeHuman(palette: Palette = {}): THREE.Group {
   const pocket = block(0.22, 0.09, 0.02, 0.01, topShade);
   pocket.position.set(0, 0.06, 0.107);
   torso.add(jacket, pocket);
-  if (palette.hood ?? true) {
-    const hood = block(0.24, 0.08, 0.1, 0.04, topShade);
-    hood.position.set(0, 0.465, -0.075);
-    hood.rotation.x = 0.3;
-    torso.add(hood);
-  }
-  if (palette.pack !== null) {
-    const packC = palette.pack ?? 0x2f6f62;
-    const pack = block(0.27, 0.31, 0.12, 0.055, mat(packC, 0.85));
-    pack.position.set(0, 0.28, -0.17);
-    const flap = block(0.27, 0.08, 0.13, 0.035, mat(shade(packC, 0.75), 0.85));
-    flap.position.set(0, 0.41, -0.17);
-    torso.add(pack, flap);
-    // straps over the shoulders and down the front
-    const strapM = mat(shade(packC, 0.6), 0.85);
-    for (const s of [-1, 1]) {
-      const over = block(0.045, 0.025, 0.25, 0.01, strapM);
-      over.position.set(s * 0.1, 0.475, -0.005);
-      const front = block(0.045, 0.24, 0.02, 0.01, strapM);
-      front.position.set(s * 0.1, 0.34, 0.121);
-      torso.add(over, front);
-    }
+  const hood = block(0.24, 0.08, 0.1, 0.04, topShade);
+  hood.position.set(0, 0.465, -0.075);
+  hood.rotation.x = 0.3;
+  torso.add(hood);
+  const packC = 0x2f6f62;
+  const pack = block(0.27, 0.31, 0.12, 0.055, mat(packC, 0.85));
+  pack.position.set(0, 0.28, -0.17);
+  const flap = block(0.27, 0.08, 0.13, 0.035, mat(shade(packC, 0.75), 0.85));
+  flap.position.set(0, 0.41, -0.17);
+  torso.add(pack, flap);
+  // straps over the shoulders and down the front
+  const strapM = mat(shade(packC, 0.6), 0.85);
+  for (const s of [-1, 1]) {
+    const over = block(0.045, 0.025, 0.25, 0.01, strapM);
+    over.position.set(s * 0.1, 0.475, -0.005);
+    const front = block(0.045, 0.24, 0.02, 0.01, strapM);
+    front.position.set(s * 0.1, 0.34, 0.121);
+    torso.add(over, front);
   }
 
   const neck = new THREE.Mesh(geo('neck', () => new THREE.CylinderGeometry(0.054, 0.06, 0.09, 10)), skinM);
@@ -306,8 +294,8 @@ export function makeHuman(palette: Palette = {}): THREE.Group {
   legL.add(shinL);
   legR.add(shinR);
 
-  const footL = sneaker(palette.shoes ?? 0x2b2f3a);
-  const footR = sneaker(palette.shoes ?? 0x2b2f3a);
+  const footL = sneaker(0x2b2f3a);
+  const footR = sneaker(0x2b2f3a);
   footL.position.y = -SHIN;
   footR.position.y = -SHIN;
   shinL.add(footL);

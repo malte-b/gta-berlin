@@ -6,7 +6,8 @@
 
 let ctx: AudioContext | null = null;
 let master: GainNode | null = null;
-export let muted = false;
+// off for now; setMuted(false) brings the sounds back
+export let muted = true;
 
 function audio(): AudioContext | null {
   if (muted) return null;
@@ -70,11 +71,6 @@ export const sfx = {
   /** A target reached: a rising arpeggio. */
   collect(): void {
     [72, 76, 79, 84].forEach((n, i) => tone(NOTE(n), i * 0.06, 0.25, 'triangle', 0.4));
-  },
-  /** Sleigh bells and a chord. */
-  jingle(): void {
-    for (let i = 0; i < 6; i++) noise(i * 0.07, 0.12, 0.25, 6000);
-    [76, 79, 83, 88].forEach((n, i) => tone(NOTE(n), 0.05 + i * 0.05, 0.5, 'sine', 0.3));
   },
   /** A clock tick; urgent for the last three seconds. */
   tick(urgent = false): void { tone(NOTE(urgent ? 91 : 84), 0, 0.08, 'square', urgent ? 0.2 : 0.12); },

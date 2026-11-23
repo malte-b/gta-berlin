@@ -200,7 +200,7 @@ mesh by distance. Expected: 7-15 M triangles down to ~2-4 M.
 | `nav.bin` without its copy of the terrain heights (the game has them from `terrain.bin`) | ~2 MB per full tile |
 | A separate 4 m terrain for distant tiles (126 KB instead of 1.9 MB) | ~1.8 MB per distant tile, ~70 MB for the coarse ring |
 | `buildings.glb` and `props.glb` meshopt-compressed (`gltfpack -cc`; the game needs three.js's `MeshoptDecoder`) | typically 3-5×: ~7 MB to ~2 MB |
-| Gzip for `.bin`, `.json`, `.glb`, stored pre-compressed on the Datahub with `Content-Encoding: gzip` (MinIO does not compress on the fly) | 20-80 % per file; best on `nav.bin` and JSON |
+| Gzip for `.bin`, `.json`, `.glb`, stored pre-compressed on the Datahub with `Content-Encoding: gzip`| 20-80 % per file; best on `nav.bin` and JSON |
 | Terrain heights delta-encoded before gzip | ~50 % of `terrain.bin` |
 
 Expected: a full tile from 17 MB to ~6-7 MB, a distant one from 2.7 MB to
@@ -233,15 +233,15 @@ samples memory every 4 s while playing and reports the peak; `--landscape`,
 `--desktop`, `--shots`, `--snapshot` (a heap snapshot by constructor) are
 options. Raw results: `docs/bench/2-games-*.json`.
 
-| Phone, 40 s per game | Döner | Heat | Watering | Toilets | Markets (sleigh) |
-|---|---|---|---|---|---|
-| **Peak memory** (textures + geometry + JS heap) | **1,608 → 804 MB** | **1,483 → 696 MB** | **1,435 → 709 MB** | **1,321 → 702 MB** | **1,630 → 792 MB** |
-| Texture memory | 605 → 179 MB | 612 → 149 MB | 492 → 130 MB | 531 → 137 MB | 677 → 177 MB |
-| Frame rate | 60 → 134 | 56 → 120 | 66 → 130 | 72 → 176 | 39 → 70 |
-| Frames over 50 ms | 13 → 5 | 18 → 10 | 27 → 6 | 6 → 4 | 65 → 51 |
-| Worst frame | 288 → 112 ms | 259 → 176 ms | 219 → 115 ms | 150 → 96 ms | 467 → 378 ms |
-| Downloaded | 103 → 42 MB | 136 → 70 MB | 187 → 52 MB | 93 → 23 MB | 338 → 246 MB |
-| Style + layout per frame | 0.94 → 0.13 ms | 1.04 → 0.05 ms | 0.94 → 0.04 ms | 1.24 → 0.08 ms | 0.99 → 0.26 ms |
+| Phone, 40 s per game | Döner | Heat | Watering | Toilets |
+|---|---|---|---|---|
+| **Peak memory** (textures + geometry + JS heap) | **1,608 → 804 MB** | **1,483 → 696 MB** | **1,435 → 709 MB** | **1,321 → 702 MB** |
+| Texture memory | 605 → 179 MB | 612 → 149 MB | 492 → 130 MB | 531 → 137 MB |
+| Frame rate | 60 → 134 | 56 → 120 | 66 → 130 | 72 → 176 |
+| Frames over 50 ms | 13 → 5 | 18 → 10 | 27 → 6 | 6 → 4 |
+| Worst frame | 288 → 112 ms | 259 → 176 ms | 219 → 115 ms | 150 → 96 ms |
+| Downloaded | 103 → 42 MB | 136 → 70 MB | 187 → 52 MB | 93 → 23 MB |
+| Style + layout per frame | 0.94 → 0.13 ms | 1.04 → 0.05 ms | 0.94 → 0.04 ms | 1.24 → 0.08 ms |
 
 The "after" runs cover more ground (games now run at 1.6× speed), so they
 are, if anything, the harder test. Peak memory includes garbage the collector
@@ -266,15 +266,11 @@ What changed:
 * **No backdrop blur on a phone**: a blurred panel over a moving 3D scene is
   re-blurred every frame by the GPU (not visible in these numbers: the GPU is
   the Mac's).
-* Smaller things: 1,500 snowflakes instead of 5,000 on `LOW`, no per-frame
-  colour allocations in the frame loop, one shared name string per tree age
-  in the watering game (80,000 young trees).
+* Smaller things: no per-frame colour allocations in the frame loop, one
+  shared name string per tree age in the watering game (80,000 young trees).
 
 Still open:
 
-* **The sleigh streams too much**: 246 MB in 40 s, since it crosses 5 km of
-  full-detail city at 125 m/s, and its frame times suffer for it. Smaller tile
-  files (point 4 above) and simple distant buildings (point 3) are the fix.
 * **A real iPhone** has to confirm this. Safari's limit is not published and
   varies by model; the emulation runs Chrome on the Mac's GPU, and the texture
   and geometry figures are estimates from the scene, not the driver's own

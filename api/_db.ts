@@ -146,7 +146,6 @@ export async function addRun(player: number, run: RunIn): Promise<void> {
  */
 const TARGET_MAX = 1500;
 const MODES: Record<string, { count: number; bonus: number }> = {
-  markets: { count: 80, bonus: 0 },
   heat: { count: 80, bonus: 1000 },
   giessen: { count: 80, bonus: 0 },
   toilets: { count: 10, bonus: 120 * 25 },   // the round ends at 5

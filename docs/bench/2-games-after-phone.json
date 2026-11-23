@@ -6,26 +6,6 @@
  "seconds": 40,
  "runs": [
   {
-   "mode": "markets",
-   "fps": 70.0,
-   "p95ms": 22.6,
-   "worstMs": 378.0,
-   "framesOver50ms": 51.0,
-   "drawCalls": 302.0,
-   "trianglesM": 2.87,
-   "layoutMs": 0.07,
-   "styleMs": 0.19,
-   "downloadedMB": 245.6,
-   "peakMB": 792.0,
-   "peak": {
-    "textureMB": 177.0,
-    "geometryMB": 252.0,
-    "heapMB": 363.0
-   },
-   "liveHeapMB": 280.0,
-   "parsedFromLog": true
-  },
-  {
    "mode": "heat",
    "fps": 120.0,
    "p95ms": 11.8,
@@ -157,5 +137,5 @@
    "liveHeapMB": 308
   }
  ],
- "note": "markets and heat parsed from the log of a run a code reload interrupted; giessen, toilets and doener from a full second run"
+ "note": "heat parsed from the log of a run a code reload interrupted; giessen, toilets and doener from a full second run"
 }

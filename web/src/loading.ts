@@ -7,7 +7,7 @@ import { LoadingArt } from './loadingart';
  * while the course is set up and the tiles around the start stream in, so
  * nobody sees free roam flash by or a half-built street at "go". Each game
  * has its own colours and a small 3D scene in the game's look
- * (loadingart.ts): snow for the markets, a blistering sun, a watering can
+ * (loadingart.ts): a blistering sun, a watering can
  * over a street tree, a flush seen from above, a turning Döner spit.
  */
 
@@ -19,7 +19,6 @@ interface Theme {
 }
 
 const THEMES: Record<string, Theme> = {
-  markets: { glow: '#27406e', base: '#070b18', accent: '#f2c14e' },
   heat: { glow: '#c2521c', base: '#1f0906', accent: '#ffb347' },
   giessen: { glow: '#2f6b3a', base: '#07140b', accent: '#7ee0a0' },
   toilets: { glow: '#3a4f86', base: '#090d1a', accent: '#8fb8ff' },
@@ -68,7 +67,7 @@ export class GameLoader {
   show(id: string, touch = false): void {
     this.touch = touch;
     this.cancelled = false;
-    const th = THEMES[id] ?? THEMES.markets;
+    const th = THEMES[id] ?? THEMES.heat;
     const s = this.el.style;
     s.setProperty('--gl-glow', th.glow);
     s.setProperty('--gl-base', th.base);
@@ -145,7 +144,7 @@ function controls(id: string, touch: boolean): HTMLElement[] {
   const parse = (key: string) => t(key).split('|').map((r) => r.split('=') as [string, string]);
   const own = parse(`load.keys.${id}`);
   const rows = touch
-    ? [...parse(id === 'markets' ? 'load.touch.markets' : 'load.touch'), ...own.filter(([k]) => !k)]
+    ? [...parse('load.touch'), ...own.filter(([k]) => !k)]
     : [...own.filter(([k]) => k), ...parse('load.keys.common'), ...own.filter(([k]) => !k)];
   return rows.flatMap(([keys, what]) => {
     if (!keys) {

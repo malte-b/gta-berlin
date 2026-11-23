@@ -92,7 +92,7 @@ export class HUD {
     // hidden on a phone and during a game
     if (document.body.classList.contains('touch') || document.body.classList.contains('gaming')) return;
     const s = this.world.stats;
-    const mode = t(player.sleigh ? 'move.sleigh' : player.flying ? 'move.flying' : `move.${player.mode}`);
+    const mode = t(player.flying ? 'move.flying' : `move.${player.mode}`);
     this.write(this.statsEl,
       `<b>${fps.toFixed(0)}</b> ${t('hud.fps')} · <b>${info.calls}</b> ${t('hud.draws')} · `
       + `<b>${(info.triangles / 1e6).toFixed(2)}</b> ${t('hud.tris')}`

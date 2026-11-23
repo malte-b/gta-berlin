@@ -3,9 +3,8 @@ import type { HUD } from './hud';
 import type { Mode, Player } from './player';
 import { num, t } from './i18n';
 import { distanceText, setDistance } from './pois';
-import { LOW } from './quality';
 import { sfx } from './sfx';
-import type { World } from './world';
+import { DATA, type World } from './world';
 
 /**
  * Game modes: timed challenges played on points from open data, baked by
@@ -13,8 +12,7 @@ import type { World } from './world';
  *
  * Every mode is the same loop - targets near where the player stands, a
  * beacon over each, a compass to the nearest, a clock - plus its own rule:
- * a sleigh that never lands, a body heating up in the sun, a watering can
- * that runs dry, a bladder, a waistline. Targets are picked around the
+ * a body heating up in the sun, a watering can that runs dry, a bladder, a waistline. Targets are picked around the
  * player's position when the game starts, so a game can be played anywhere
  * in the built city: roam somewhere, press P, play there.
  *
@@ -32,7 +30,6 @@ export interface ModeInfo {
 }
 
 export const MODE_INFO: ModeInfo[] = [
-  { id: 'markets', emoji: '🎅' },
   { id: 'heat', emoji: '🥵' },
   { id: 'giessen', emoji: '🌱' },
   { id: 'toilets', emoji: '🚻' },
@@ -45,7 +42,7 @@ export const MODE_INFO: ModeInfo[] = [
  * here as {dur}.
  */
 export const LIMITS: Record<string, number> = {
-  markets: 90, heat: 90, giessen: 90, toilets: 120, doener: 60,
+  heat: 90, giessen: 90, toilets: 120, doener: 60,
 };
 /** Klo-Notstand: how many toilets make a win. */
 const TOILET_GOAL = 5;
@@ -84,13 +81,12 @@ export interface GameHost {
   player: Player;
   hud: HUD;
   camera: THREE.PerspectiveCamera;
-  setNight(n: number): void;
 }
 
 /**
  * Games run faster than free roam: targets lie hundreds of metres apart, and
- * a minute of jogging to the first one is no fun. Walking, riding and the
- * sleigh speed up by this; the car is fast enough as it is.
+ * a minute of jogging to the first one is no fun. Walking and riding
+ * speed up by this; the car is fast enough as it is.
  */
 const GAME_PACE = 1.6;
 
@@ -132,10 +128,10 @@ interface Spot {
 
 type RawPoint = [number, number, string, string, string?];
 
-const DATA = 'data/games/';
+const GAMES = DATA + 'games/';
 
 async function points(file: string): Promise<{ points: RawPoint[]; attribution: string }> {
-  const res = await fetch(DATA + file);
+  const res = await fetch(GAMES + file);
   if (!res.ok) throw new Error(`${file} missing - run pipeline/build_games.py`);
   return res.json();
 }
@@ -247,47 +243,6 @@ interface Ring { mesh: THREE.Mesh; life: number }
 /** A shock ring flat on the ground, where a target was reached. */
 const RING = new THREE.RingGeometry(0.82, 1, 48).rotateX(-Math.PI / 2);
 const RING_LIFE = 0.8;
-
-/** Falling snow in a box that travels with the camera. */
-class Snow {
-  readonly points: THREE.Points;
-  private readonly pos: Float32Array;
-  /** Moved on the CPU every frame: a phone (quality.ts) gets fewer. */
-  private static readonly N = LOW ? 1500 : 5000;
-  private static readonly R = 120;
-
-  constructor() {
-    this.pos = new Float32Array(Snow.N * 3);
-    for (let i = 0; i < this.pos.length; i++) this.pos[i] = (Math.random() * 2 - 1) * Snow.R;
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(this.pos, 3));
-    // a soft round flake rather than the default square
-    const c = document.createElement('canvas');
-    c.width = c.height = 32;
-    const g = c.getContext('2d')!;
-    const grad = g.createRadialGradient(16, 16, 0, 16, 16, 16);
-    grad.addColorStop(0, 'rgba(255,255,255,1)');
-    grad.addColorStop(1, 'rgba(255,255,255,0)');
-    g.fillStyle = grad;
-    g.fillRect(0, 0, 32, 32);
-    this.points = new THREE.Points(geo, new THREE.PointsMaterial({
-      map: new THREE.CanvasTexture(c), size: 0.7, transparent: true, opacity: 0.9, depthWrite: false,
-    }));
-    this.points.frustumCulled = false;
-  }
-
-  update(dt: number, at: THREE.Vector3): void {
-    const R = Snow.R, p = this.pos;
-    for (let i = 0; i < p.length; i += 3) {
-      p[i + 1] -= dt * (2.2 + (i % 7) * 0.25);
-      p[i] += Math.sin(p[i + 1] * 0.1 + i) * dt * 0.6;
-      if (p[i + 1] < -R) p[i + 1] += 2 * R;
-    }
-    // flakes live in the box's own frame, so moving it is all it takes
-    this.points.position.copy(at);
-    (this.points.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
-  }
-}
 
 /* --- the shared game loop ---------------------------------------------------- */
 
@@ -658,7 +613,7 @@ export abstract class Game {
       for (const s of this.spots) {
         if (s.done) continue;
         const d = Math.hypot(s.x - p.pos.x, s.z - p.pos.z);
-        if (d < s.reach && this.inReach(s)) this.reached(s);
+        if (d < s.reach) this.reached(s);
       }
       if (this.comboLeft > 0) {
         this.comboLeft -= dt;
@@ -718,9 +673,6 @@ export abstract class Game {
     css(lines, 'opacity', String(Math.round(this.rushMix * 70) / 100));
     css(lines, 'display', this.rushMix > 0.01 ? 'block' : 'none');
   }
-
-  /** Any extra condition on top of distance, e.g. the sleigh's altitude. */
-  protected inReach(_s: Spot): boolean { return true; }
 
   /** 0 to 3: which medal the run has earned. */
   protected medal(): number {
@@ -867,87 +819,6 @@ export abstract class Game {
 
 /* --- the modes --------------------------------------------------------------- */
 
-/** Fly Santa's sleigh over the Christmas markets. */
-class MarketRun extends Game {
-  private snow = new Snow();
-  protected override beaconRange = 9000;
-  protected override beaconCount = 14;
-  protected override beaconHeight = 320;
-  protected override beaconWidth = 5;
-  protected override comboWindow = 12;
-  protected override timeBonus = 3;
-  protected override medals: [number, number, number] = [4, 8, 14];
-  // the sleigh is quick already; much faster and the city cannot stream in
-  protected override pace = 0.8;
-
-  async load(): Promise<void> {
-    const d = await points('markets.json');
-    this.attribution = d.attribution;
-    // from the air the whole city is in reach; a single-area build has
-    // no market of its own, so these are not limited to the built tiles
-    this.pool = d.points.map((p) => spot(p, 60));
-  }
-
-  // start over the middle of a cluster, high up
-  protected override startRule = { r: 3000, min: 8 };
-
-  override prepare(): void {
-    this.spots = this.pool;
-  }
-
-  override start(): void {
-    super.start();
-    this.host.player.setSleigh(true);
-    this.host.setNight(1);
-    this.host.scene.add(this.snow.points);
-  }
-
-  override stop(): void {
-    this.host.scene.remove(this.snow.points);
-    this.snow.points.geometry.dispose();
-    this.host.player.setSleigh(false);
-    this.host.setNight(0);
-    super.stop();
-  }
-
-  protected look(): [string, string] { return ['🎄', '#e8b23a']; }
-
-  /** Shift's boost is the rush. */
-  protected override rush(): number {
-    const p = this.host.player;
-    return Math.max(0, Math.min(1, (p.sleighSpeed / p.speedScale - 65) / 45));
-  }
-
-  protected override inReach(): boolean {
-    const p = this.host.player;
-    return p.pos.y - this.host.world.height(p.pos.x, p.pos.z) < 200;
-  }
-
-  protected override tick(dt: number): void {
-    this.snow.update(dt, (this.host.camera as THREE.PerspectiveCamera).position);
-  }
-
-  protected reached(s: Spot): void {
-    s.done = true;
-    sfx.jingle();
-    const p = this.host.player;
-    this.award(s, p.pos.x, p.pos.y, p.pos.z);
-    this.burst(p.pos.x, p.pos.y, p.pos.z, [0xc8102e, 0x2f8f4e, 0x2a62c9, 0xe8b23a], 10, 0.7);
-    this.banner(this.text('hit', { name: s.n }));
-  }
-
-  protected scoreLine(): string {
-    return this.text('score', { n: this.count });
-  }
-
-  protected finish(): Outcome {
-    return {
-      won: this.count > 0, title: this.text(this.count >= 8 ? 'won' : 'lost'),
-      lines: [this.text('line', { n: this.count, of: this.spots.length }), this.attribution],
-    };
-  }
-}
-
 /** Hitzewelle: points for lasting the whole round. */
 const HEAT_BONUS = 1000;
 
@@ -1074,7 +945,7 @@ class GiessDenKiez extends Game {
   private sound = 0;
 
   async load(): Promise<void> {
-    const res = await fetch(DATA + 'giessen.json');
+    const res = await fetch(GAMES + 'giessen.json');
     if (!res.ok) throw new Error('giessen.json missing - run pipeline/build_games.py');
     const d = await res.json() as { attribution: string; pumps: RawPoint[]; trees: number[] };
     this.attribution = d.attribution;
@@ -1322,7 +1193,6 @@ class DoenerMarathon extends Game {
 export function makeGame(id: string, host: GameHost): Game {
   const info = MODE_INFO.find((m) => m.id === id)!;
   switch (id) {
-    case 'markets': return new MarketRun(info, host);
     case 'heat': return new HeatWave(info, host);
     case 'giessen': return new GiessDenKiez(info, host);
     case 'toilets': return new ToiletRush(info, host);

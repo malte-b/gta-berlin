@@ -6,42 +6,6 @@
  "seconds": 40,
  "runs": [
   {
-   "mode": "markets",
-   "frames": 1565,
-   "fps": 39,
-   "p50ms": 21.4,
-   "p95ms": 43.5,
-   "worstMs": 467,
-   "framesOver50ms": 65,
-   "drawCalls": 430,
-   "trianglesM": 4.46,
-   "gameMsPerFrame": 1.31,
-   "scriptMs": 15.63,
-   "styleMs": 0.43,
-   "layoutMs": 0.56,
-   "layouts": 1,
-   "heapMB": 396,
-   "downloadedMB": 338.1,
-   "reached": 5,
-   "score": 2100,
-   "hops": 0,
-   "metres": 3868,
-   "peakMB": 1630,
-   "peak": {
-    "textureMB": 677,
-    "geometryMB": 435,
-    "heapMB": 518,
-    "glTextures": 367,
-    "glGeometries": 1432,
-    "tiles": {
-     "buildings": 6989,
-     "trees": 11702,
-     "tiles": 35,
-     "full": 7
-    }
-   }
-  },
-  {
    "mode": "heat",
    "frames": 2268,
    "fps": 56,

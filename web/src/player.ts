@@ -53,14 +53,6 @@ export const MODES: Record<Mode, ModeConfig> = {
   boat:    { label: 'by boat',   cruise: 9.0,  sprint: 15.0, nav: 'water', stride: 4.0,  eye: 1.4 },
 };
 
-// the sleigh, metres per second and metres above the ground
-const SLEIGH_SLOW = 22;
-const SLEIGH_CRUISE = 40;
-const SLEIGH_FAST = 65;
-const SLEIGH_BOOST = 110;
-const SLEIGH_FLOOR = 6;
-const SLEIGH_CEILING = 450;
-
 const CAR_ACCEL = 13.0;
 const CAR_BRAKE = 22.0;
 const CAR_REVERSE = -11.0;
@@ -114,9 +106,6 @@ export class Player {
   speedScale = 1;
   /** Game modes that are played on the ground switch flight off. */
   canFly = true;
-  /** Santa's sleigh: always airborne, always moving forward. */
-  sleigh = false;
-  sleighSpeed = 0;
 
   constructor(world: World) {
     this.world = world;
@@ -130,7 +119,6 @@ export class Player {
   get driving() { return this.cfg.nav === 'drive'; }
 
   get speedKmh() {
-    if (this.sleigh) return this.sleighSpeed * 3.6;
     return this.vehicle
       ? Math.abs(this.speed) * 3.6
       : Math.hypot(this.vel.x, this.vel.z) * 3.6;
@@ -252,7 +240,6 @@ export class Player {
     if (this.takeoffCooldown > 0) this.takeoffCooldown -= dt;
     if (this.justLanded > 0) this.justLanded -= dt;
     this.pitchInput(keys, dt);
-    if (this.sleigh) return this.updateSleigh(dt, keys);
     if (this.flying) return this.updateFly(dt, keys);
     if (this.boating) return this.updateBoat(dt, keys);
     if (this.vehicle) return this.updateVehicle(dt, keys);
@@ -470,54 +457,6 @@ export class Player {
     }
   }
 
-  /**
-   * The sleigh flies like a plane: it never stops, W and S trim the speed,
-   * A/D (or Q/E, or the mouse) bank it round and the view's pitch is its
-   * climb. It skims over the ground rather than landing.
-   */
-  private updateSleigh(dt: number, keys: Set<string>): void {
-    const boost = keys.has('ShiftLeft') || keys.has('ShiftRight');
-    const want = (boost ? SLEIGH_BOOST : keys.has('KeyW') ? SLEIGH_FAST
-      : keys.has('KeyS') ? SLEIGH_SLOW : SLEIGH_CRUISE) * this.speedScale;
-    this.sleighSpeed += (want - this.sleighSpeed) * Math.min(1, dt * 1.6);
-    const steer = (keys.has('KeyA') ? 1 : 0) - (keys.has('KeyD') ? 1 : 0) + this.turnInput(keys);
-    this.yaw += Math.max(-1, Math.min(1, steer)) * 1.25 * dt;
-    this.lean += (-steer * 0.45 - this.lean) * Math.min(1, dt * 4);
-    if (keys.has('Space')) this.pitch = Math.min(0.7, this.pitch + 0.9 * dt);
-    if (keys.has('ControlLeft')) this.pitch = Math.max(-0.7, this.pitch - 0.9 * dt);
-    this.pitch = Math.max(-0.7, Math.min(0.7, this.pitch));
-    const cp = Math.cos(this.pitch);
-    const v = this.sleighSpeed * dt;
-    this.pos.x += -Math.sin(this.yaw) * cp * v;
-    this.pos.z += -Math.cos(this.yaw) * cp * v;
-    this.pos.y += Math.sin(this.pitch) * v;
-    const g = this.world.height(this.pos.x, this.pos.z);
-    if (this.pos.y < g + SLEIGH_FLOOR) {
-      // skim off the ground and nose up a little
-      this.pos.y = g + SLEIGH_FLOOR;
-      if (this.pitch < 0.05) this.pitch += (0.05 - this.pitch) * Math.min(1, dt * 3);
-    }
-    this.pos.y = Math.min(this.pos.y, g + SLEIGH_CEILING);
-    this.heading = this.yaw;
-    this.strideDist += v;
-    this.vel.set(0, 0, 0);
-  }
-
-  /** Board the sleigh at a safe height, or step off it. */
-  setSleigh(on: boolean): void {
-    this.sleigh = on;
-    this.flying = false;
-    if (on) {
-      this.mode = 'foot';
-      this.sleighSpeed = SLEIGH_CRUISE;
-      this.pitch = 0.05;
-      this.pos.y = Math.max(this.pos.y, this.world.height(this.pos.x, this.pos.z) + 60);
-    } else {
-      this.lean = 0;
-      this.settle(200);
-    }
-  }
-
   /** Put the player back on their feet wherever they came down. */
   land(): void {
     this.flying = false;
@@ -575,17 +514,6 @@ export class Player {
   }
 
   applyCamera(cam: THREE.PerspectiveCamera, dt = 1 / 60): THREE.Vector3 {
-    if (this.sleigh) {
-      this.boomDistance = null;
-      // a chase camera behind and above the reindeer
-      const s = Math.sin(this.yaw), c = Math.cos(this.yaw);
-      const at = new THREE.Vector3(this.pos.x - s * 6, this.pos.y + 2, this.pos.z - c * 6);
-      const back = this.camMode === 1 ? 11 : 17;
-      cam.position.set(this.pos.x + s * back, this.pos.y + 5.5 - Math.sin(this.pitch) * back,
-                       this.pos.z + c * back);
-      cam.lookAt(at);
-      return at;
-    }
     if (this.flying) {
       this.boomDistance = null;
       cam.position.set(this.pos.x, this.pos.y, this.pos.z);

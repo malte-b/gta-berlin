@@ -16,7 +16,6 @@ import { bestScore, recordRun } from './scores';
 import { Menu, type Choice } from './menu';
 import { applyStatic, setLang, t, type Lang } from './i18n';
 import { TouchControls, isTouchDevice } from './touch';
-import { makeSleigh, poseSleigh } from './sleigh';
 import { LOW } from './quality';
 import { BOAT, makeBike, makeBoat, makeCar, makeHuman, makeScooter, poseCycle, poseDrive, poseIdle,
          poseJump, poseScoot, poseWalk } from './character';
@@ -135,7 +134,7 @@ const hud = new HUD(world);
 const locator = new Locator(world, player, hud);
 const pois = new PoiLayer(scene, world);
 hud.pois = pois;
-world.onFull = (tile) => { if (tile.poiFile) void pois.add(tile.key, tile.poiFile); };
+world.onFull = (tile) => void pois.add(tile.key, world.poiUrl(tile));
 world.onDropFull = (tile) => pois.remove(tile.key);
 const layerPanel = await new LayerPanel(pois, world, hud).load();
 
@@ -210,7 +209,7 @@ async function choose(c: Choice): Promise<void> {
   loader.show(c.id, touchDevice);
   const seed = 'seed' in c ? c.seed : null;
   try {
-    const g = makeGame(c.id, { scene, world, player, hud, camera, setNight: (n) => { night = n; } });
+    const g = makeGame(c.id, { scene, world, player, hud, camera });
     // Esc on the loading screen: give up after whatever step is under way
     const backOut = () => {
       if (!loader.cancelled) return false;
@@ -380,7 +379,6 @@ addEventListener('keydown', (e) => {
     // F used to be the car, which collided with the new pitch control.
     case 'Digit1': case 'Digit2': case 'Digit3': case 'Digit4': case 'Digit5': {
       const wanted = MOVES[Number(e.code.slice(5)) - 1];
-      if (player.sleigh) break;
       if (game && !game.allows(wanted)) {
         hud.hint(t('hint.notIn', { game: t(`mode.${game.info.id}.title`) }));
         break;
@@ -399,7 +397,7 @@ addEventListener('keydown', (e) => {
       break;
     case 'KeyH': {
       if (!player.canFly) {
-        hud.hint(t(player.sleigh ? 'hint.sleighFlies' : 'hint.noFlying'));
+        hud.hint(t('hint.noFlying'));
         break;
       }
       const flying = player.toggleFly();
@@ -503,8 +501,8 @@ const touch = touchDevice ? new TouchControls(look, [
   // the next way of getting around this game allows, showing which it is;
   // none when there is no choice
   { label: () => MOVE_ICONS[nextMove()], code: () => `Digit${MOVES.indexOf(nextMove()) + 1}`,
-    show: () => !player.sleigh && MOVES.filter((m) => !game || game.allows(m)).length > 1 },
-  { label: '⤒', code: 'Space', show: () => !player.sleigh && !player.vehicle },
+    show: () => MOVES.filter((m) => !game || game.allows(m)).length > 1 },
+  { label: '⤒', code: 'Space', show: () => !player.vehicle },
 ], (push) => { player.stick = push; }) : null;
 let touchShown = true;
 
@@ -573,11 +571,6 @@ const car = makeCar();
 car.traverse((c) => { if ((c as THREE.Mesh).isMesh) c.castShadow = true; });
 scene.add(car);
 
-const sleigh = makeSleigh();
-sleigh.visible = false;
-sleigh.rotation.order = 'YXZ';
-scene.add(sleigh);
-
 /* --- frame loop ---------------------------------------------------------- */
 
 let nightMix = 0;
@@ -607,7 +600,7 @@ function frame(now: number): void {
     game.update(dt);
     if (game.state === 'over') endGame(false);
   }
-  if (player.flying !== wasFlying && !player.sleigh) {
+  if (player.flying !== wasFlying) {
     hud.hint(t(player.flying ? 'hint.airborne' : 'hint.landed'));
   }
   pois.update(player.pos.x, player.pos.z);
@@ -615,19 +608,13 @@ function frame(now: number): void {
 
   // --- character, vehicle and pose -------------------------------------
   const firstPerson = player.camMode === 2 || camera.position.distanceTo(head) < 0.8;
-  const show = !player.flying && !firstPerson && !player.sleigh;
+  const show = !player.flying && !firstPerson;
   // in the car the tinted cabin hides the driver, whose head would poke through the roof
   avatar.visible = show && player.mode !== 'car';
   bike.visible = show && player.mode === 'bike';
   scooter.visible = show && player.mode === 'scooter';
-  car.visible = !player.flying && !player.sleigh && player.mode === 'car';
-  boat.visible = !player.flying && !player.sleigh && player.mode === 'boat';
-  sleigh.visible = player.sleigh;
-  if (player.sleigh) {
-    sleigh.position.copy(player.pos);
-    sleigh.rotation.set(-player.pitch * 0.6, player.yaw + Math.PI, player.lean);
-    poseSleigh(sleigh, acc);
-  }
+  car.visible = !player.flying && player.mode === 'car';
+  boat.visible = !player.flying && player.mode === 'boat';
 
   // meshes are modelled facing +Z; travel is along -Z, hence the half turn
   const facing = player.heading + Math.PI;

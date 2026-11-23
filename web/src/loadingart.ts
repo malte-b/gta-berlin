@@ -53,37 +53,6 @@ const glowTexture = () => canvasTexture(64, 64, (g) => {
   g.fillRect(0, 0, 64, 64);
 });
 
-/* --- Weihnachtsmarkt: snow, nothing else ----------------------------------- */
-
-function snow(): Art {
-  const scene = new THREE.Scene();
-  const N = 1400;
-  const pos = new Float32Array(N * 3);
-  const speed = new Float32Array(N);
-  for (let i = 0; i < N; i++) {
-    pos.set([(Math.random() - 0.5) * 30, (Math.random() - 0.5) * 18, -16 + Math.random() * 20], i * 3);
-    speed[i] = 0.6 + Math.random() * 0.9;
-  }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  const flakes = new THREE.Points(geo, new THREE.PointsMaterial({
-    map: glowTexture(), size: 0.22, transparent: true, depthWrite: false, opacity: 0.95,
-  }));
-  scene.add(flakes);
-  return {
-    scene, view: [0, 0],
-    update(t, dt) {
-      for (let i = 0; i < N; i++) {
-        const k = i * 3;
-        pos[k] += Math.sin(t * 0.8 + i) * dt * 0.35;
-        pos[k + 1] -= speed[i] * dt;
-        if (pos[k + 1] < -9) pos[k + 1] += 18;
-      }
-      geo.attributes.position.needsUpdate = true;
-    },
-  };
-}
-
 /* --- Hitzewelle: a blistering sun ------------------------------------------ */
 
 function sun(): Art {
@@ -415,7 +384,7 @@ function spit(): Art {
   };
 }
 
-const ARTS: Record<string, () => Art> = { markets: snow, heat: sun, giessen: watering, toilets: toilet, doener: spit };
+const ARTS: Record<string, () => Art> = { heat: sun, giessen: watering, toilets: toilet, doener: spit };
 
 export class LoadingArt {
   private renderer: THREE.WebGLRenderer | null = null;
@@ -434,8 +403,7 @@ export class LoadingArt {
     this.renderer.setClearColor(0x000000, 0);
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
-    this.art = (ARTS[id] ?? snow)();
-    this.anchor.classList.toggle('none', id === 'markets');
+    this.art = (ARTS[id] ?? sun)();
     this.t0 = this.last = performance.now();
     const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
     const tick = (now: number) => {

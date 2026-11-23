@@ -31,7 +31,7 @@ const desktop = args.includes('--desktop');
 const landscape = args.includes('--landscape');
 const url = opt('--url', 'http://localhost:5173/?lang=de');
 const seconds = Number(opt('--seconds', '40'));
-const only = opt('--only', 'markets,heat,giessen,toilets,doener').split(',');
+const only = opt('--only', 'heat,giessen,toilets,doener').split(',');
 const shots = opt('--shots', '');
 const profileName = desktop ? 'desktop' : landscape ? 'phone-landscape' : 'phone';
 const out = opt('--out', `games-${profileName}.json`);
@@ -116,11 +116,7 @@ await ev(`(() => {
     if (!s) return;
     const dx = s.x - p.pos.x, dz = s.z - p.pos.z, d = Math.hypot(dx, dz);
     const yaw = Math.atan2(-dx, -dz);
-    if (p.sleigh) {
-      p.yaw = yaw;
-      const agl = p.pos.y - b.world.height(p.pos.x, p.pos.z);
-      p.pitch = Math.max(-0.5, Math.min(0.5, (Math.min(120, d * 0.3) - agl) * 0.01));
-    } else if (p.vehicle) {
+    if (p.vehicle) {
       p.heading = yaw;
     } else {
       p.yaw = yaw;
