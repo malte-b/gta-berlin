@@ -3,15 +3,13 @@
 
 Overpass is queried exactly once per tile, at build time, and the result is
 projected into game-world metres and written to web/public/data/: one file
-per tile of the tile base (pois/<E_N>.json) and pois.json for its single
-area. The running game never talks to Overpass - it just reads those files -
+per tile of the tile base (pois/<E_N>.json). The running game never talks to Overpass - it just reads those files -
 so playing the game puts no load on the API at all.
 
 The tiles themselves are hosted; this reads only their index
-(world.json, area/world.json) from the tile base at VITE_TILE_BASE (.env).
+(world.json) from the tile base at VITE_TILE_BASE (.env).
 
     python3 pipeline/build_pois.py            # all of Berlin, cached responses if present
-    python3 pipeline/build_pois.py --area     # the single area
     python3 pipeline/build_pois.py --refresh  # re-query Overpass
 
 Data (c) OpenStreetMap contributors, ODbL.
@@ -305,20 +303,10 @@ def write(path, out):
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--area", action="store_true",
-                    help="the single area (area/ in the tile base) instead of all of Berlin")
     ap.add_argument("--refresh", action="store_true",
                     help="re-query Overpass instead of using the cached responses")
     args = ap.parse_args()
     base = tile_base()
-
-    if args.area:
-        manifest = read_index(base, "area/world.json")
-        size = write(os.path.join(OUT, "pois.json"),
-                     build(manifest["origin"], manifest["world"],
-                           os.path.join(CACHE, "pois_overpass.json"), args.refresh))
-        log("Wrote pois.json (%.0f KB)" % (size / 1024))
-        return 0
 
     index = read_index(base, "world.json")
     keys = sorted(index["tiles"])
