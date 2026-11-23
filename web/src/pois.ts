@@ -6,9 +6,9 @@ import type { World } from './world';
 /**
  * Street names and points of interest, read from a file baked at build time.
  *
- * pipeline/build_pois.py queries Overpass once and writes pois.json with
- * everything already projected into world metres, so the running game never
- * touches the API and needs no runtime reprojection.
+ * Each tile of the tile base carries a pois.json, queried from Overpass once
+ * when the tiles are built and already projected into world metres, so the
+ * running game never touches the API and needs no runtime reprojection.
  *
  * Labels are canvas textures, created lazily the first time a given string is
  * needed and then cached - there are only about 115 distinct street names in

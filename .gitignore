@@ -149,6 +149,5 @@ vite.config.ts.timestamp-*
 .DS_Store
 /tools/
 /web/public/data/*
-!/web/public/data/pois/
 !/web/public/data/layers/
 !/web/public/data/games/

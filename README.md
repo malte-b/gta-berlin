@@ -71,7 +71,6 @@ The game's own data is built by the scripts in `pipeline/` (Python, standard
 library only) into `web/public/data/`, and committed:
 
 ```bash
-python3 pipeline/build_pois.py       # pois/<tile>.json for every tile of the tile base
 python3 pipeline/build_layers.py     # layers/
 python3 pipeline/build_games.py      # games/
 ```
@@ -273,11 +272,10 @@ stands out of the streets. The water mirrors the same sky, by Fresnel.
 
 ## Street names and places
 
-`pipeline/build_pois.py` queries Overpass **once** per tile, at build time,
-projects everything into world metres and writes one file per tile of the
-tile base to `web/public/data/pois/`.
-The running game only ever reads those files, so playing puts no load on the
-API.
+Street names and places come with the tile base: each tile's `pois.json`,
+queried from Overpass **once** per tile when the tiles are built and projected
+into world metres. The running game only ever reads those files, so playing
+puts no load on the API.
 
 Street names are painted onto the road surface and turned to the local
 bearing; places get a billboard label on a stem. Both mount only within a
@@ -285,7 +283,7 @@ radius of the camera, and label textures are cached by string.
 
 The *refresh* category (benches, drinking fountains, toilets, shade) mirrors
 what the [Berliner Erfrischungskarte](https://erfrischungskarte.odis-berlin.de/)
-surfaces. Re-run with `--refresh` to re-query Overpass.
+surfaces.
 
 ## Checking a build
 

@@ -11,8 +11,7 @@ import { Tile, type GroundKind, type SharedGround } from './tile';
 /** The hosted tiles of all of Berlin: object storage at VITE_TILE_BASE (.env). */
 export const TILE_BASE = ((import.meta.env.VITE_TILE_BASE as string | undefined) ?? '')
   .replace(/\/?$/, '/');
-/** The game's own data, committed with it: street names and POIs per tile
- *  (pipeline/build_pois.py), data layers, game targets. */
+/** The game's own data, committed with it: data layers, game targets. */
 export const DATA = 'data/';
 
 // Streaming distances, metres from the player to the nearest edge of a tile.
@@ -270,9 +269,9 @@ export class World {
     return null;
   }
 
-  /** Street names and POIs for a tile: the game's own, not the tile base's. */
+  /** Street names and POIs for a tile, from the tile base. */
   poiUrl(tile: Tile): string {
-    return `${DATA}pois/${tile.key}.json`;
+    return tile.url(tile.manifest?.pois ?? 'pois.json');
   }
 
   /** The tile covering (x, z), loaded or not. */

@@ -57,6 +57,8 @@ export interface TileManifest {
   /** Flat water surfaces (pipeline/water.py); absent where there is none. */
   water?: { file: string };
   shorelines?: { file: string };
+  /** Street names and POIs (pipeline/build_pois.py of the tile base). */
+  pois?: string;
 }
 
 /** Ground textures shared by every tile; each adds its own cover mask. */
@@ -146,7 +148,7 @@ export class Tile {
 
   /* --- loading ----------------------------------------------------------- */
 
-  private url(file: string): string {
+  url(file: string): string {
     return this.base + file + (this.version ? `?v=${this.version}` : '');
   }
 
