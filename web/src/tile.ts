@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { Decks } from './bridges';
 import { Shorelines, type ShoreData } from './shorelines';
@@ -11,6 +12,9 @@ import { LOW } from './quality';
 import { NavGrid, TerrainField, parseProps, parseTrees, type Tree } from './tiles';
 import { bridgeMaterial, crownMaterial, litWindows, photoRoofs, terrainMaterial, trunkMaterial,
          type GroundKind, type GroundTextures, type OrthoTile } from './materials';
+
+/** Reads plain and meshopt-compressed glTF (EXT_meshopt_compression). */
+const gltfLoader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
 
 const TERRAIN_CHUNK = 100;          // metres per terrain mesh; one orthophoto each
 const COARSE_STEP = 4;              // metres between vertices of a distant tile
@@ -301,9 +305,9 @@ export class Tile {
     const [nbuf, tbuf, gltf, props, coverBlob, overview] = await Promise.all([
       fetch(this.url(m.nav.file)).then((r) => r.arrayBuffer()),
       fetch(this.url(m.trees.file)).then((r) => r.arrayBuffer()),
-      m.buildings ? new GLTFLoader().loadAsync(this.url(m.buildings.file)) : Promise.resolve(null),
+      m.buildings ? gltfLoader.loadAsync(this.url(m.buildings.file)) : Promise.resolve(null),
       m.props ? Promise.all([
-        new GLTFLoader().loadAsync(this.url(m.props.models)),
+        gltfLoader.loadAsync(this.url(m.props.models)),
         fetch(this.url(m.props.file)).then((r) => r.arrayBuffer()),
       ]) : Promise.resolve(null),
       this.blob(m.cover.file),
