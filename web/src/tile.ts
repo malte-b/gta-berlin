@@ -48,7 +48,6 @@ export interface TileManifest {
     overview: { file: string; res: number; w: number; h: number };
   };
   nav: { file: string };
-  pois?: string;
   /** Bridge decks; absent where there are none. */
   bridges?: { file: string; count: number };
   /** Flat water surfaces (pipeline/water.py); absent where there is none. */
@@ -94,8 +93,6 @@ export class Tile {
   map: ImageBitmap | null = null;
   trees: Tree[] = [];
   buildings = 0;
-  /** POI file of a full tile, relative to the data root, if it has one. */
-  poiFile: string | null = null;
 
   readonly animated: Uniforms[] = [];
   readonly windowMats: THREE.MeshStandardMaterial[] = [];
@@ -342,7 +339,6 @@ export class Tile {
     this.setDecks();
     this.setShores();
     this.buildings = m.buildings?.count ?? 0;
-    this.poiFile = m.pois ? this.url(m.pois) : null;
     if (this.coarse) this.coarse.visible = false;
     this.fine.visible = this.open.visible = true;
     this.level = 'full';
@@ -385,7 +381,6 @@ export class Tile {
     this.map = null;
     this.trees = [];
     this.buildings = 0;
-    this.poiFile = null;
     if (this.coarse) this.coarse.visible = true;
     if (this.level === 'full') this.level = 'coarse';
   }

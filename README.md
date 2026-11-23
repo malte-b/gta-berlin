@@ -63,18 +63,15 @@ a phone; see `docs/performance.md`.
 ## The world
 
 The city is hosted as tiles: terrain, buildings, trees, street furniture,
-water and bridges, in 1 × 1 km tiles for all of Berlin, plus a single area
-(Kreuzberg) for where there is no Berlin-wide build. The game reads them from
+water and bridges, in 1 × 1 km tiles for all of Berlin. The game reads them from
 the bucket `VITE_TILE_BASE` names (in `.env` for the dev server and local
-builds, and in Vercel's environment variables): all of Berlin at its root,
-the single area in `area/`.
+builds, and in Vercel's environment variables).
 
 The game's own data is built by the scripts in `pipeline/` (Python, standard
 library only) into `web/public/data/`, and committed:
 
 ```bash
 python3 pipeline/build_pois.py       # pois/<tile>.json for every tile of the tile base
-python3 pipeline/build_pois.py --area  # pois.json for the single area
 python3 pipeline/build_layers.py     # layers/
 python3 pipeline/build_games.py      # games/
 ```
@@ -219,9 +216,6 @@ The points are baked by `pipeline/build_games.py` into
   one click away on the start screen (or `?lang=en`); the choice is
   remembered. Strings live in `web/src/i18n.ts`; names from the datasets stay
   as published.
-* **Needs the tiled build.** The single Kreuzberg area is too small for a
-  fair start in most modes; there the game says so and plays unranked where
-  you stand.
 
 ---
 
@@ -281,7 +275,7 @@ stands out of the streets. The water mirrors the same sky, by Fresnel.
 
 `pipeline/build_pois.py` queries Overpass **once** per tile, at build time,
 projects everything into world metres and writes one file per tile of the
-tile base to `web/public/data/pois/` (and `pois.json` for the single area).
+tile base to `web/public/data/pois/`.
 The running game only ever reads those files, so playing puts no load on the
 API.
 

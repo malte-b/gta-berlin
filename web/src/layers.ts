@@ -1,5 +1,6 @@
 import { utm33, type Origin } from './geo';
 import { t } from './i18n';
+import { DATA } from './world';
 
 /**
  * Point layers: datasets shown as labelled markers in the city.
@@ -29,7 +30,6 @@ export interface PointLayer {
   attribution?: string;
 }
 
-const DATA = 'data/';
 const UPLOAD_COLOURS = ['#f687b3', '#9f7aea', '#68d391', '#fc8181', '#63b3ed', '#faf089'];
 const LABEL_KEYS = ['name', 'bezeichnung', 'titel', 'title', 'label', 'standort',
                     'schulname', 'einrichtung', 'adresse', 'address'];

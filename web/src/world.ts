@@ -6,14 +6,14 @@ import { NavGrid } from './tiles';
 import { t } from './i18n';
 import { closeOnUpload } from './memory';
 import { LOW } from './quality';
-import { Tile, type GroundKind, type SharedGround, type TileManifest } from './tile';
+import { Tile, type GroundKind, type SharedGround } from './tile';
 
-const DATA = 'data/';
-/** All of Berlin, built by pipeline/build_berlin.py: served locally by the dev
- *  server, or from object storage when VITE_TILE_BASE names its URL (see
- *  pipeline/sync_tiles.py). */
-const BERLIN = ((import.meta.env.VITE_TILE_BASE as string | undefined) || 'data/berlin')
+/** The hosted tiles of all of Berlin: object storage at VITE_TILE_BASE (.env). */
+export const TILE_BASE = ((import.meta.env.VITE_TILE_BASE as string | undefined) ?? '')
   .replace(/\/?$/, '/');
+/** The game's own data, committed with it: street names and POIs per tile
+ *  (pipeline/build_pois.py), data layers, game targets. */
+export const DATA = 'data/';
 
 // Streaming distances, metres from the player to the nearest edge of a tile.
 // Street level is hazed out by ~1.1 km, so full detail need not reach further;
@@ -39,10 +39,9 @@ const STEPS = [[1, 0], [-1, 0], [0, 1], [0, -1]] as const;
  *  boat, metres: the boat's height and the deck's own thickness. */
 const BOAT_HEADROOM = 2.5;
 
-/** world.json: either one area (pipeline/build_world.py) or the index of a
- *  tiled build (pipeline/build_berlin.py). */
+/** world.json: the index of the tiled build (pipeline/build_berlin.py). */
 export interface Manifest {
-  kind: 'osm3d' | 'tiles';
+  kind: 'tiles';
   origin: Origin;
   world: [number, number, number, number, number, number];
   centre: { x: number; z: number; lon: number; lat: number };
@@ -51,9 +50,9 @@ export interface Manifest {
   environment?: { file: string; source: string };
   spawn?: { x: number; z: number; heading?: number; facing?: string };
   attribution: string[];
-  /** Tiled builds: every finished tile, by laser-scan km "E_N". */
-  /** v changes whenever the tile is rebuilt, so cached copies are not reused. */
-  tiles?: Record<string, { dir: string; world: Manifest['world']; v?: string }>;
+  /** Every finished tile, by laser-scan km "E_N"; v changes whenever the
+   *  tile is rebuilt, so cached copies are not reused. */
+  tiles: Record<string, { dir: string; world: Manifest['world']; v?: string }>;
 }
 
 export interface Env {
@@ -65,8 +64,7 @@ export interface Env {
  * The world: laser-scan terrain, OSM2World buildings, cadastre trees and
  * street furniture, in tiles streamed around the player.
  *
- * A single-area build is one tile that is always loaded at full detail. All
- * of Berlin is ~1,000 tiles of 1 km: full detail near the player, coarse
+ * All of Berlin is ~1,000 tiles of 1 km: full detail near the player, coarse
  * photo-draped terrain further out, nothing beyond. Queries - ground height,
  * where you may walk or drive - are answered by whichever tile is underfoot;
  * where nothing is loaded yet, nothing is passable, so you wait at the edge
@@ -88,7 +86,6 @@ export class World {
   onDropFull: (tile: Tile) => void = () => {};
 
   readonly tiles = new Map<string, Tile>();
-  private base = DATA;
   private shared!: SharedGround;
   private aniso = 1;
   private busy = false;
@@ -100,19 +97,12 @@ export class World {
     scene.add(this.group);
   }
 
-  get tiled(): boolean { return this.manifest.kind === 'tiles'; }
-
   async init(onProgress: (msg: string) => void, renderer: THREE.WebGLRenderer): Promise<this> {
-    // the Berlin-wide build if there is one locally, else the committed area
-    const m = await readJson<Manifest>(BERLIN + 'world.json');
-    if (m?.kind === 'tiles' && m.tiles && Object.keys(m.tiles).length) {
-      this.manifest = m;
-      this.base = BERLIN;
-    } else {
-      const one = await readJson<Manifest & TileManifest>(DATA + 'world.json');
-      if (!one) throw new Error(`${DATA}world.json missing`);
-      this.manifest = one;
+    const m = await readJson<Manifest>(TILE_BASE + 'world.json');
+    if (m?.kind !== 'tiles' || !m.tiles || !Object.keys(m.tiles).length) {
+      throw new Error(`${TILE_BASE}world.json has no tiles`);
     }
+    this.manifest = m;
     const man = this.manifest;
     this.origin = man.origin;
     this.world = man.world;
@@ -124,31 +114,26 @@ export class World {
     onProgress(t('boot.textures'));
     this.shared = await this.loadShared();
 
-    if (this.tiled) {
-      for (const [key, t] of Object.entries(man.tiles!)) {
-        this.tiles.set(key, new Tile(key, this.base + t.dir, t.world, null, t.v));
+    for (const [key, t] of Object.entries(man.tiles)) {
+      this.tiles.set(key, new Tile(key, TILE_BASE + t.dir, t.world, null, t.v));
+    }
+    this.viewLimit = COARSE_IN;
+    // a build still under way may not have reached the spawn yet
+    const sp = this.spawnPoint;
+    if (!this.covers(sp.x, sp.z)) {
+      let best: Tile | null = null;
+      for (const t of this.tiles.values()) {
+        if (!best || t.distance(sp.x, sp.z) < best.distance(sp.x, sp.z)) best = t;
       }
-      this.viewLimit = COARSE_IN;
-      // a build still under way may not have reached the spawn yet
-      const sp = this.spawnPoint;
-      if (!this.covers(sp.x, sp.z)) {
-        let best: Tile | null = null;
-        for (const t of this.tiles.values()) {
-          if (!best || t.distance(sp.x, sp.z) < best.distance(sp.x, sp.z)) best = t;
-        }
-        const [x0, z0, x1, z1] = best!.bounds;
-        this.spawnPoint = { x: (x0 + x1) / 2, z: (z0 + z1) / 2 };
-      }
-    } else {
-      const one = man as Manifest & TileManifest;
-      this.tiles.set('area', new Tile('area', this.base, one.world, { ...one, pois: 'pois.json' }));
+      const [x0, z0, x1, z1] = best!.bounds;
+      this.spawnPoint = { x: (x0 + x1) / 2, z: (z0 + z1) / 2 };
     }
     return this;
   }
 
   private async loadShared(): Promise<SharedGround> {
     const loader = new THREE.TextureLoader();
-    const load = (file: string, srgb: boolean) => loader.loadAsync(this.base + file).then(async (t) => {
+    const load = (file: string, srgb: boolean) => loader.loadAsync(TILE_BASE + file).then(async (t) => {
       // a phone (quality.ts) takes them at 512 px, flipped as three would have
       if (LOW && t.image.width > 512) {
         t.image = await createImageBitmap(t.image as HTMLImageElement,
@@ -172,7 +157,7 @@ export class World {
     return { color, normal };
   }
 
-  envUrl(file: string): string { return this.base + file; }
+  envUrl(file: string): string { return TILE_BASE + file; }
 
   /* --- streaming ----------------------------------------------------------- */
 
@@ -184,7 +169,7 @@ export class World {
     while (this.busy) await new Promise((r) => setTimeout(r, 30));
     this.busy = true;
     try {
-      onProgress?.(tile.key === 'area' ? t('boot.city') : t('boot.tile', { k: tile.key }));
+      onProgress?.(t('boot.tile', { k: tile.key }));
       await this.raise(tile, 'full');
     } finally {
       this.busy = false;
@@ -201,7 +186,7 @@ export class World {
   update(x: number, z: number): void {
     let want: { tile: Tile; level: 'coarse' | 'full'; d: number } | null = null;
     for (const tile of this.tiles.values()) {
-      const d = this.tiled ? tile.distance(x, z) : 0;
+      const d = tile.distance(x, z);
       if (tile.level === 'full' && d > FULL_OUT) {
         this.onDropFull(tile);
         tile.dropFull();
@@ -240,7 +225,7 @@ export class World {
   progress(x: number, z: number): { done: number; total: number } {
     let done = 0, total = 0;
     for (const tile of this.tiles.values()) {
-      const d = this.tiled ? tile.distance(x, z) : 0;
+      const d = tile.distance(x, z);
       const level = d <= FULL_IN ? 'full' : d <= COARSE_IN ? 'coarse' : null;
       if (!level) continue;
       total++;
@@ -285,9 +270,13 @@ export class World {
     return null;
   }
 
+  /** Street names and POIs for a tile: the game's own, not the tile base's. */
+  poiUrl(tile: Tile): string {
+    return `${DATA}pois/${tile.key}.json`;
+  }
+
   /** The tile covering (x, z), loaded or not. */
   tileOf(x: number, z: number): Tile | null {
-    if (!this.tiled) return this.tiles.values().next().value ?? null;
     const e = Math.floor((x + this.origin.e) / 1000);
     const n = Math.floor((this.origin.n - z) / 1000);
     return this.tiles.get(`${e}_${n}`) ?? null;

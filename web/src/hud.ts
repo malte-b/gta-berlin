@@ -28,7 +28,7 @@ export class HUD {
   pois: PoiLayer | null = null;
   /** A game's targets, drawn on the minimap as rings. */
   marks: { x: number; z: number; colour: string }[] = [];
-  area = 'Kreuzberg';
+  area = 'Berlin';
   private readonly canvas = el<HTMLCanvasElement>('map');
   private readonly ctx = this.canvas.getContext('2d')!;
   private readonly statsEl = el('stats');
@@ -48,7 +48,6 @@ export class HUD {
   constructor(world: World) {
     this.world = world;
     this.fromWorld = makeFromWorld(world.origin);
-    if (world.tiled) this.area = 'Berlin';
     this.updateLabel();
     onLang(() => this.updateLabel());
   }
@@ -97,7 +96,7 @@ export class HUD {
       `<b>${fps.toFixed(0)}</b> ${t('hud.fps')} · <b>${info.calls}</b> ${t('hud.draws')} · `
       + `<b>${(info.triangles / 1e6).toFixed(2)}</b> ${t('hud.tris')}`
       + `<br><b>${s.buildings}</b> ${t('hud.buildings')} · <b>${s.trees}</b> ${t('hud.trees')}`
-      + (this.world.tiled ? ` · <b>${s.full}</b>/<b>${s.tiles}</b> ${t('hud.tiles')}` : '')
+      + ` · <b>${s.full}</b>/<b>${s.tiles}</b> ${t('hud.tiles')}`
       + `<br>x <b>${px.toFixed(0)}</b>  z <b>${pz.toFixed(0)}</b>  alt <b>${player.pos.y.toFixed(1)}</b> m`
       + `<br>${mode}`);
   }
